@@ -1,0 +1,38 @@
+version: '3.9'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: messenger
+      POSTGRES_USER: messenger
+      POSTGRES_PASSWORD: secret
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./migrations:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U messenger"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  server:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8443:8443"
+    volumes:
+      - ./certs:/app/certs:ro
+      - ./config:/app/config:ro
+      - ./logs:/app/logs
+    environment:
+      - MESSENGER_DB_DSN=postgres://messenger:secret@postgres:5432/messenger?sslmode=disable
+
+volumes:
+  pgdata:

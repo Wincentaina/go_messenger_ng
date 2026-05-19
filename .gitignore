@@ -32,4 +32,13 @@ go.work.sum
 # .vscode/
 /CLAUDE.md
 /kursovik_trebovania.pdf
-/PLAN.md
+
+# Compiled binaries
+/bin/
+
+# TLS certs (generated locally, never commit private keys)
+/certs/
+
+# Runtime logs
+/logs/
+*.log
