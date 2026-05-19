@@ -61,14 +61,14 @@ func (p *Postgres) CheckPassword(username, password string) (int, bool, error) {
 		`SELECT id, password_hash FROM users WHERE username=$1`, username,
 	).Scan(&id, &hash)
 	if err == sql.ErrNoRows {
-		return 0, false, nil
+		return 0, false, fmt.Errorf("пользователь не найден")
 	}
 	if err != nil {
 		return 0, false, fmt.Errorf("lookup user: %w", err)
 	}
 
 	if err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)); err != nil {
-		return 0, false, nil
+		return 0, false, fmt.Errorf("неверный пароль")
 	}
 	return id, true, nil
 }

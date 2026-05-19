@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"strings"
 	"time"
 
 	"github.com/wincentaina/go_messenger_ng/internal/protocol"
@@ -27,9 +28,15 @@ func (s *Server) handleConn(conn net.Conn) {
 		send:     make(chan envelope, 64),
 	}
 	s.hub.register <- client
-	defer func() { s.hub.unregister <- client }()
+	defer func() {
+		s.hub.unregister <- client
+		s.broadcastUserList() // notify everyone that someone went offline
+	}()
 
 	s.logger.Log("USER_LOGIN", username, fmt.Sprintf("addr=%s", conn.RemoteAddr()))
+	// Pass client explicitly: hub may not have processed the registration yet,
+	// so we include the new user in the online set and send directly to them.
+	s.broadcastUserList(client)
 
 	// writer goroutine: drains client.send → wire
 	done := make(chan struct{})
@@ -66,9 +73,13 @@ func (s *Server) authenticate(conn net.Conn) (string, error) {
 	if err := json.Unmarshal(raw, &req); err != nil {
 		return "", fmt.Errorf("parse auth_req: %w", err)
 	}
+	// Trim on server side regardless of client — prevents trailing-space bugs
+	req.Username = strings.TrimSpace(req.Username)
+	req.Password = strings.TrimSpace(req.Password)
+
 	if req.Username == "" || req.Password == "" {
 		_ = protocol.Encode(conn, protocol.TypeAuthResp, protocol.AuthResp{
-			OK: false, Message: "username and password required",
+			OK: false, Message: "логин и пароль не могут быть пустыми",
 		})
 		return "", fmt.Errorf("empty credentials")
 	}
@@ -85,12 +96,12 @@ func (s *Server) authenticate(conn net.Conn) (string, error) {
 	}
 
 	if err != nil || !authOK {
-		msg := "invalid username or password"
+		msg := "неверное имя пользователя или пароль"
 		if err != nil {
 			msg = err.Error()
 		}
 		_ = protocol.Encode(conn, protocol.TypeAuthResp, protocol.AuthResp{OK: false, Message: msg})
-		return "", fmt.Errorf("auth: %v", err)
+		return "", fmt.Errorf("%s", msg)
 	}
 
 	_ = protocol.Encode(conn, protocol.TypeAuthResp, protocol.AuthResp{OK: true, UserID: userID})
@@ -151,6 +162,13 @@ func (s *Server) handleSendMsg(client *clientConn, raw []byte) {
 	recv.ID = id
 
 	recvRaw, _ := json.Marshal(recv)
+
+	// Echo back to sender so they see their own message in the chat
+	select {
+	case client.send <- envelope{t: protocol.TypeRecvMsg, payload: recvRaw}:
+	default:
+	}
+
 	s.hub.route <- routeMsg{from: client.username, t: protocol.TypeRecvMsg, payload: recvRaw}
 	s.logger.Log("MSG_SENT", client.username, fmt.Sprintf("to=%s", msg.ToUser))
 }
@@ -185,7 +203,8 @@ func (s *Server) handleUserListReq(client *clientConn) {
 		log.Printf("list users: %v", err)
 		users = s.hub.OnlineUsers()
 	}
-	resp := protocol.UserListResp{Users: users}
+	online := s.hub.OnlineUsers()
+	resp := protocol.UserListResp{Users: users, Online: online}
 	respRaw, _ := json.Marshal(resp)
 	select {
 	case client.send <- envelope{t: protocol.TypeUserListResp, payload: respRaw}:
