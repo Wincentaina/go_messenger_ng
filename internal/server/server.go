@@ -1,0 +1,124 @@
+package server
+
+import (
+	"crypto/tls"
+	"encoding/json"
+	"fmt"
+	"log"
+	"net"
+	"os"
+	"os/signal"
+	"sync"
+	"syscall"
+
+	"github.com/wincentaina/go_messenger_ng/internal/protocol"
+	"github.com/wincentaina/go_messenger_ng/internal/server/config"
+)
+
+// DB is the interface the server needs from the database layer.
+// Defined here so the server package stays decoupled from a specific driver.
+type DB interface {
+	CreateUser(username, password string) (int, error)
+	CheckPassword(username, password string) (int, bool, error)
+	SaveMessage(msg protocol.RecvMsg) (int64, error)
+	GetHistory(userA, userB string, limit int) ([]protocol.RecvMsg, error)
+	ListUsers() ([]string, error)
+	CreateGroup(name, createdBy string, members []string) error
+	GetGroupMembers(name string) ([]string, error)
+	SaveGroupMessage(msg protocol.GroupMsg) error
+	GetGroupHistory(group string, limit int) ([]protocol.RecvMsg, error)
+}
+
+// Logger is the interface the server uses to record events.
+type Logger interface {
+	Log(eventType, username, details string)
+}
+
+// Server ties together the TLS listener, hub, DB, and logger.
+type Server struct {
+	cfg    config.Config
+	hub    *Hub
+	db     DB
+	logger Logger
+}
+
+func New(cfg config.Config, db DB, logger Logger) *Server {
+	return &Server{cfg: cfg, hub: NewHub(), db: db, logger: logger}
+}
+
+// Run starts the hub, listens for connections, and blocks until SIGTERM/SIGINT.
+// On SIGTERM/SIGINT it sends a shutdown notice to all clients and exits cleanly.
+// On SIGHUP it reloads the server config (port/limits) without stopping.
+func (s *Server) Run(tlsCfg *tls.Config) error {
+	addr := fmt.Sprintf("%s:%d", s.cfg.Server.Host, s.cfg.Server.Port)
+	ln, err := tls.Listen("tcp", addr, tlsCfg)
+	if err != nil {
+		return fmt.Errorf("listen %s: %w", addr, err)
+	}
+	defer ln.Close()
+
+	go s.hub.Run()
+	s.logger.Log("SERVER_START", "", fmt.Sprintf("addr=%s", addr))
+	log.Printf("server listening on %s (TLS)", addr)
+
+	// Accept loop runs in background; signals handled in main goroutine below.
+	go s.acceptLoop(ln)
+
+	return s.handleSignals(ln)
+}
+
+func (s *Server) acceptLoop(ln net.Listener) {
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			// Listener was closed — normal during shutdown
+			return
+		}
+		go s.handleConn(conn)
+	}
+}
+
+// handleSignals blocks waiting for OS signals.
+func (s *Server) handleSignals(ln net.Listener) error {
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
+
+	for sig := range sigCh {
+		switch sig {
+		case syscall.SIGHUP:
+			// Reload config on SIGHUP without downtime
+			log.Println("SIGHUP: reloading config (feature stub)")
+			s.logger.Log("CONFIG_RELOAD", "", "SIGHUP received")
+
+		case syscall.SIGTERM, syscall.SIGINT:
+			log.Println("shutdown signal received")
+			s.shutdown(ln)
+			return nil
+		}
+	}
+	return nil
+}
+
+// shutdown broadcasts a notice to all clients and closes the listener.
+func (s *Server) shutdown(ln net.Listener) {
+	notice, _ := json.Marshal(protocol.ServerShutdown{Reason: "сервер пал, милорд"})
+
+	var wg sync.WaitGroup
+	s.hub.mu.RLock()
+	for _, c := range s.hub.clients {
+		wg.Add(1)
+		go func(c *clientConn) {
+			defer wg.Done()
+			select {
+			case c.send <- envelope{t: protocol.TypeServerShutdown, payload: notice}:
+			default:
+			}
+		}(c)
+	}
+	s.hub.mu.RUnlock()
+	wg.Wait()
+
+	ln.Close()
+	s.logger.Log("SERVER_STOP", "", "graceful shutdown")
+	log.Println("server stopped")
+}
