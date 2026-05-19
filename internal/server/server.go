@@ -99,6 +99,52 @@ func (s *Server) handleSignals(ln net.Listener) error {
 	return nil
 }
 
+// broadcastUserList sends the updated user+online list to all connected clients.
+// Pass newClient when a user just connected — they may not be in hub.clients yet
+// due to the async registration channel, so we send to them directly and include
+// them in the online set manually.
+func (s *Server) broadcastUserList(newClient ...*clientConn) {
+	users, err := s.db.ListUsers()
+	if err != nil {
+		log.Printf("broadcastUserList: %v", err)
+		return
+	}
+
+	s.hub.mu.RLock()
+	onlineSet := make(map[string]bool, len(s.hub.clients)+1)
+	for name := range s.hub.clients {
+		onlineSet[name] = true
+	}
+	// Include the new client even if hub hasn't processed the registration yet
+	var extra *clientConn
+	if len(newClient) > 0 && newClient[0] != nil {
+		extra = newClient[0]
+		onlineSet[extra.username] = true
+	}
+
+	online := make([]string, 0, len(onlineSet))
+	for name := range onlineSet {
+		online = append(online, name)
+	}
+	raw, _ := json.Marshal(protocol.UserListResp{Users: users, Online: online})
+
+	for _, c := range s.hub.clients {
+		select {
+		case c.send <- envelope{t: protocol.TypeUserListResp, payload: raw}:
+		default:
+		}
+	}
+	s.hub.mu.RUnlock()
+
+	// Send directly to the new client (not in hub.clients yet)
+	if extra != nil {
+		select {
+		case extra.send <- envelope{t: protocol.TypeUserListResp, payload: raw}:
+		default:
+		}
+	}
+}
+
 // shutdown broadcasts a notice to all clients and closes the listener.
 func (s *Server) shutdown(ln net.Listener) {
 	notice, _ := json.Marshal(protocol.ServerShutdown{Reason: "сервер пал, милорд"})

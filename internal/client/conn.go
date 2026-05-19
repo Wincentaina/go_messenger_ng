@@ -35,7 +35,8 @@ type outMsg struct {
 	payload any
 }
 
-// Connect dials the server over TLS and starts the read/write goroutines.
+// Connect dials the server over TLS.
+// Goroutines are NOT started yet — call Auth first, then they start automatically.
 func Connect(addr string, tlsCfg *tls.Config) (*Conn, error) {
 	raw, err := tls.Dial("tcp", addr, tlsCfg)
 	if err != nil {
@@ -48,20 +49,18 @@ func Connect(addr string, tlsCfg *tls.Config) (*Conn, error) {
 		outgoing: make(chan outMsg, 64),
 		done:     make(chan struct{}),
 	}
-
-	go c.readLoop()
-	go c.writeLoop()
 	return c, nil
 }
 
-// Auth sends credentials and waits for the server's AuthResp.
+// Auth sends credentials, waits for AuthResp, then starts the read/write goroutines.
+// Must be called exactly once before Send/Incoming.
 func (c *Conn) Auth(username, password string, register bool) (protocol.AuthResp, error) {
 	req := protocol.AuthReq{Username: username, Password: password, Register: register}
 	if err := protocol.Encode(c.conn, protocol.TypeAuthReq, req); err != nil {
 		return protocol.AuthResp{}, fmt.Errorf("send auth: %w", err)
 	}
 
-	// Auth response arrives before the goroutines start routing, so read directly.
+	// Read the response directly — goroutines aren't running yet so no race.
 	t, raw, err := protocol.Decode(c.conn)
 	if err != nil {
 		return protocol.AuthResp{}, fmt.Errorf("read auth resp: %w", err)
@@ -73,6 +72,12 @@ func (c *Conn) Auth(username, password string, register bool) (protocol.AuthResp
 	var resp protocol.AuthResp
 	if err := json.Unmarshal(raw, &resp); err != nil {
 		return protocol.AuthResp{}, fmt.Errorf("parse auth resp: %w", err)
+	}
+
+	// Start I/O goroutines only after successful auth
+	if resp.OK {
+		go c.readLoop()
+		go c.writeLoop()
 	}
 	return resp, nil
 }
