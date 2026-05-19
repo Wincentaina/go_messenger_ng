@@ -1,0 +1,10 @@
+server:
+  address: "localhost:8443"
+
+tls:
+  # path to server's self-signed cert for verification
+  ca_cert:     "certs/server.crt"
+  skip_verify: false
+
+cache:
+  max_messages_per_chat: 100

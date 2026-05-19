@@ -1,0 +1,17 @@
+server:
+  host: "0.0.0.0"
+  port: 8443
+  max_connections: 100
+
+tls:
+  cert_file: "certs/server.crt"
+  key_file:  "certs/server.key"
+
+database:
+  dsn: "postgres://messenger:secret@localhost:5432/messenger?sslmode=disable"
+  max_open_conns: 25
+  max_idle_conns: 5
+
+logging:
+  file:  "logs/server.log"
+  level: "info"
