@@ -4,6 +4,7 @@ package db
 import (
 	"database/sql"
 	"fmt"
+	"log"
 	"time"
 
 	_ "github.com/lib/pq" // postgres driver
@@ -54,22 +55,13 @@ func (p *Postgres) CreateUser(username, password string) (int, error) {
 }
 
 // CheckPassword verifies credentials. Returns (userID, true, nil) on success.
-// If the user row is not found on the first attempt, retries once after 150 ms
-// to tolerate transient replication/connection-pool lag after fresh registration.
 func (p *Postgres) CheckPassword(username, password string) (int, bool, error) {
 	var id int
 	var hash string
 	err := p.conn.QueryRow(
 		`SELECT id, password_hash FROM users WHERE username=$1`, username,
 	).Scan(&id, &hash)
-	if err == sql.ErrNoRows {
-		// Retry once — guards against the rare case where a just-registered user
-		// is not yet visible on this connection.
-		time.Sleep(150 * time.Millisecond)
-		err = p.conn.QueryRow(
-			`SELECT id, password_hash FROM users WHERE username=$1`, username,
-		).Scan(&id, &hash)
-	}
+	log.Printf("db.CheckPassword: username=%q scan_err=%v", username, err)
 	if err == sql.ErrNoRows {
 		return 0, false, nil // user genuinely does not exist
 	}

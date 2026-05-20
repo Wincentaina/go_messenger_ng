@@ -7,6 +7,8 @@ import (
 	"log"
 	"os"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/wincentaina/go_messenger_ng/internal/client"
 	clientcfg "github.com/wincentaina/go_messenger_ng/internal/client/config"
@@ -17,6 +19,12 @@ import (
 func main() {
 	cfgPath := flag.String("config", "config/client.yaml", "path to client config")
 	flag.Parse()
+
+	// tcell (used by tview) enables mouse/focus event reporting and may not
+	// disable it if the previous session was killed without proper cleanup.
+	// Emit the corresponding disable sequences and drain any stale stdin bytes
+	// so they don't corrupt the credential prompt input.
+	resetTerminal()
 
 	cfg, err := clientcfg.Load(*cfgPath)
 	if err != nil {
@@ -76,17 +84,62 @@ func main() {
 	}
 }
 
+// drainStdin discards all bytes currently in the stdin buffer without blocking.
+func drainStdin() {
+	fd := int(os.Stdin.Fd())
+	if err := syscall.SetNonblock(fd, true); err != nil {
+		return
+	}
+	buf := make([]byte, 256)
+	for {
+		n, _ := syscall.Read(fd, buf)
+		if n <= 0 {
+			break
+		}
+	}
+	syscall.SetNonblock(fd, false) //nolint:errcheck
+}
+
+// resetTerminal disables mouse/focus event reporting that tcell may have left
+// active after an unclean exit, and drains any pending stdin bytes.
+// Two-phase drain: emit disable sequences → wait for terminal to process →
+// drain again to catch any events that arrived during the window.
+func resetTerminal() {
+	// Disable the most common terminal mouse/focus modes.
+	fmt.Print("\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1004l\x1b[?1006l\x1b[?1015l")
+	drainStdin()
+
+	// Give the terminal emulator time to process the above sequences
+	// and deliver any buffered events before we drain again.
+	time.Sleep(80 * time.Millisecond)
+	drainStdin()
+}
+
 func promptCredentials(r *bufio.Reader) (username, password string, register bool) {
 	fmt.Print("Имя пользователя: ")
 	username, _ = r.ReadString('\n')
-	username = strings.TrimSpace(username)
+	username = sanitizeASCII(strings.TrimSpace(username))
 
 	fmt.Print("Пароль: ")
 	password, _ = r.ReadString('\n')
-	password = strings.TrimSpace(password)
+	password = sanitizeASCII(strings.TrimSpace(password))
 
 	fmt.Print("Регистрация нового аккаунта? (y/N): ")
 	ans, _ := r.ReadString('\n')
 	register = strings.TrimSpace(strings.ToLower(ans)) == "y"
 	return
+}
+
+// sanitizeASCII strips any non-printable or non-ASCII bytes that may have
+// been injected into stdin by terminal mouse/focus events from a previous
+// tview session (e.g. garbage prefix like "\xd1\x89\xaa" before the actual input).
+func sanitizeASCII(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c >= 0x20 && c < 0x7F {
+			b.WriteByte(c)
+		}
+	}
+	return b.String()
 }

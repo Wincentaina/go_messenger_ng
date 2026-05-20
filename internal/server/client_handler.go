@@ -77,6 +77,8 @@ func (s *Server) authenticate(conn net.Conn) (string, error) {
 	req.Username = strings.TrimSpace(req.Username)
 	req.Password = strings.TrimSpace(req.Password)
 
+	log.Printf("auth attempt: username=%q register=%v from=%s", req.Username, req.Register, conn.RemoteAddr())
+
 	if req.Username == "" || req.Password == "" {
 		_ = protocol.Encode(conn, protocol.TypeAuthResp, protocol.AuthResp{
 			OK: false, Message: "логин и пароль не могут быть пустыми",
@@ -93,6 +95,7 @@ func (s *Server) authenticate(conn net.Conn) (string, error) {
 		authOK = err == nil
 	} else {
 		userID, authOK, err = s.db.CheckPassword(req.Username, req.Password)
+		log.Printf("auth check: user=%q ok=%v err=%v", req.Username, authOK, err)
 	}
 
 	if err != nil || !authOK {
