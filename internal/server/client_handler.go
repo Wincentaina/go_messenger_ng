@@ -126,6 +126,10 @@ func (s *Server) readLoop(conn net.Conn, client *clientConn) {
 
 		switch t {
 		case protocol.TypeSendMsg:
+			if !consumeToken(client) {
+				s.sendError(client, "слишком много сообщений, подождите")
+				continue
+			}
 			s.handleSendMsg(client, raw)
 
 		case protocol.TypeHistoryReq:
@@ -138,7 +142,14 @@ func (s *Server) readLoop(conn net.Conn, client *clientConn) {
 			s.handleCreateGroup(client, raw)
 
 		case protocol.TypeGroupMsg:
+			if !consumeToken(client) {
+				s.sendError(client, "слишком много сообщений, подождите")
+				continue
+			}
 			s.handleGroupMsg(client, raw)
+
+		case protocol.TypeTyping:
+			s.handleTyping(client, raw)
 
 		case protocol.TypeAddToGroup:
 			s.handleAddToGroup(client, raw)
@@ -326,6 +337,72 @@ func (s *Server) notifyGroupMembers(groupName string, members []string) {
 		}
 	}
 	s.hub.mu.RUnlock()
+}
+
+// consumeToken implements a token-bucket rate limiter (5 msgs/sec burst 5).
+// Called only from the per-client readLoop — no mutex required.
+func consumeToken(client *clientConn) bool {
+	const maxTokens = 5
+	const ratePerSec = 5.0
+
+	now := time.Now()
+	if client.lastRefill.IsZero() {
+		client.lastRefill = now
+		client.msgTokens = maxTokens
+	} else {
+		elapsed := now.Sub(client.lastRefill).Seconds()
+		add := int(elapsed * ratePerSec)
+		if add > 0 {
+			client.msgTokens += add
+			if client.msgTokens > maxTokens {
+				client.msgTokens = maxTokens
+			}
+			client.lastRefill = now
+		}
+	}
+	if client.msgTokens > 0 {
+		client.msgTokens--
+		return true
+	}
+	return false
+}
+
+func (s *Server) handleTyping(client *clientConn, raw []byte) {
+	var notif protocol.TypingNotif
+	if err := json.Unmarshal(raw, &notif); err != nil {
+		return
+	}
+	notif.FromUser = client.username
+	notifRaw, _ := json.Marshal(notif)
+
+	if notif.ToUser != "" {
+		s.hub.mu.RLock()
+		if c, ok := s.hub.clients[notif.ToUser]; ok {
+			select {
+			case c.send <- envelope{t: protocol.TypeTyping, payload: notifRaw}:
+			default:
+			}
+		}
+		s.hub.mu.RUnlock()
+		return
+	}
+
+	if notif.ToGroup != "" {
+		members, _ := s.db.GetGroupMembers(notif.ToGroup)
+		s.hub.mu.RLock()
+		for _, member := range members {
+			if member == client.username {
+				continue
+			}
+			if c, ok := s.hub.clients[member]; ok {
+				select {
+				case c.send <- envelope{t: protocol.TypeTyping, payload: notifRaw}:
+				default:
+				}
+			}
+		}
+		s.hub.mu.RUnlock()
+	}
 }
 
 func (s *Server) handleAddToGroup(client *clientConn, raw []byte) {

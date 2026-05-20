@@ -43,6 +43,7 @@ const (
 	TypeLeaveGroup      MsgType = 0x0D
 	TypeDeleteAccount   MsgType = 0x0E
 	TypeAddToGroup      MsgType = 0x0F
+	TypeTyping          MsgType = 0x10
 )
 
 // --- Payload structs ---------------------------------------------------------
@@ -138,6 +139,14 @@ type LeaveGroup struct {
 // DeleteAccountReq is sent by the client to soft-delete their own account.
 // The server removes the user from listings and disconnects them.
 type DeleteAccountReq struct{}
+
+// TypingNotif is sent by the client while composing a message.
+// The server forwards it to the recipient(s); FromUser is filled by the server.
+type TypingNotif struct {
+	FromUser string `json:"from_user,omitempty"`
+	ToUser   string `json:"to_user,omitempty"`
+	ToGroup  string `json:"to_group,omitempty"`
+}
 
 // AddToGroup asks the server to add a user to an existing group.
 type AddToGroup struct {

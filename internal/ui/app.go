@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"time"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
@@ -55,6 +56,16 @@ type App struct {
 	// quote even if the message has been evicted from the conversation cache.
 	replyMap map[int64]protocol.RecvMsg
 
+	// typingBar shows "X печатает..." below the chat; auto-clears via typingTimer.
+	typingBar   *tview.TextView
+	typingTimer *time.Timer
+
+	// onlineSet tracks currently connected users for DM title status display.
+	onlineSet map[string]bool
+
+	// lastTypingSent throttles outgoing TypeTyping notifications (max 1 per 2s).
+	lastTypingSent time.Time
+
 	// root layout — needed to attach modal dialogs
 	root *tview.Flex
 }
@@ -62,11 +73,12 @@ type App struct {
 // New creates the App but doesn't run it yet.
 func New(conn *client.Conn, me string, cache *client.MessageCache) *App {
 	a := &App{
-		tapp:     tview.NewApplication(),
-		conn:     conn,
-		me:       me,
-		cache:    cache,
-		replyMap: make(map[int64]protocol.RecvMsg),
+		tapp:      tview.NewApplication(),
+		conn:      conn,
+		me:        me,
+		cache:     cache,
+		replyMap:  make(map[int64]protocol.RecvMsg),
+		onlineSet: make(map[string]bool),
 	}
 	a.buildLayout()
 	return a
@@ -112,12 +124,33 @@ func (a *App) buildLayout() {
 		SetWordWrap(true)
 	a.chatView.SetBorder(true).SetTitle(" Чат ")
 
+	// Typing indicator bar — 1 row, no border, cleared automatically.
+	a.typingBar = tview.NewTextView().SetDynamicColors(true)
+
 	// Bottom: message input.
 	a.inputField = tview.NewInputField().
 		SetLabel(" > ").
 		SetLabelColor(tcell.ColorGreen).
 		SetFieldBackgroundColor(tcell.ColorBlack)
 	a.inputField.SetBorder(true)
+
+	// Send TypeTyping when the user is actively composing (throttled to 1 per 2s).
+	a.inputField.SetChangedFunc(func(text string) {
+		if a.currentChat == "" || text == "" {
+			return
+		}
+		if time.Since(a.lastTypingSent) < 2*time.Second {
+			return
+		}
+		a.lastTypingSent = time.Now()
+		notif := protocol.TypingNotif{}
+		if a.isGroup {
+			notif.ToGroup = strings.TrimPrefix(a.currentChat, "#")
+		} else {
+			notif.ToUser = a.currentChat
+		}
+		a.conn.Send(protocol.TypeTyping, notif)
+	})
 	a.inputField.SetDoneFunc(func(key tcell.Key) {
 		if key == tcell.KeyEnter {
 			a.sendCurrentInput()
@@ -171,6 +204,7 @@ func (a *App) buildLayout() {
 	a.root = tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(a.titleBar, 1, 0, false).
 		AddItem(mainFlex, 0, 1, true).
+		AddItem(a.typingBar, 1, 0, false).
 		AddItem(a.inputField, 3, 0, false)
 
 	a.tapp.SetRoot(a.root, true).SetFocus(a.userList)
@@ -189,7 +223,11 @@ func (a *App) buildLayout() {
 func (a *App) openChat(target string) {
 	a.currentChat = target
 	a.isGroup = strings.HasPrefix(target, "#")
-	a.chatView.SetTitle(fmt.Sprintf(" Чат с: %s ", target))
+	a.updateChatTitle()
+	a.typingBar.SetText("") // clear stale typing indicator from previous chat
+	if a.typingTimer != nil {
+		a.typingTimer.Stop()
+	}
 
 	// Clear unread marker in the list (keep colour tag intact)
 	for i := 0; i < a.userList.GetItemCount(); i++ {
@@ -430,6 +468,29 @@ func (a *App) handleIncoming(msg client.Incoming) {
 			a.rebuildUserList(resp.Users, resp.Online, resp.Groups)
 		})
 
+	case protocol.TypeTyping:
+		var notif protocol.TypingNotif
+		if err := json.Unmarshal(msg.Payload, &notif); err != nil {
+			return
+		}
+		// Only show if the notification is for the currently open chat
+		relevant := !a.isGroup && notif.FromUser == a.currentChat
+		if !relevant && a.isGroup {
+			relevant = "#"+notif.ToGroup == a.currentChat
+		}
+		if !relevant {
+			return
+		}
+		a.tapp.QueueUpdateDraw(func() {
+			a.typingBar.SetText(fmt.Sprintf(" [grey]%s печатает...[-]", notif.FromUser))
+			if a.typingTimer != nil {
+				a.typingTimer.Stop()
+			}
+			a.typingTimer = time.AfterFunc(3*time.Second, func() {
+				a.tapp.QueueUpdateDraw(func() { a.typingBar.SetText("") })
+			})
+		})
+
 	case protocol.TypeServerShutdown:
 		var s protocol.ServerShutdown
 		json.Unmarshal(msg.Payload, &s) //nolint:errcheck
@@ -641,6 +702,8 @@ func (a *App) rebuildUserList(users []string, online []string, groups []string) 
 	for _, u := range online {
 		onlineSet[u] = true
 	}
+	a.onlineSet = onlineSet
+	a.updateChatTitle()
 
 	// Preserve unread markers across rebuild
 	unread := make(map[string]bool)
@@ -707,6 +770,23 @@ func stripLabel(label string) string {
 		}
 	}
 	return s
+}
+
+// updateChatTitle refreshes the chat panel title with online status for DMs.
+func (a *App) updateChatTitle() {
+	if a.currentChat == "" {
+		a.chatView.SetTitle(" Чат ")
+		return
+	}
+	if a.isGroup {
+		a.chatView.SetTitle(fmt.Sprintf(" Чат с: %s ", a.currentChat))
+		return
+	}
+	status := "[grey](офлайн)[-]"
+	if a.onlineSet[a.currentChat] {
+		status = "[green](онлайн)[-]"
+	}
+	a.chatView.SetTitle(fmt.Sprintf(" Чат с: %s %s ", a.currentChat, status))
 }
 
 func (a *App) setStatus(msg string) {

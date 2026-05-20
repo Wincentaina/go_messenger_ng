@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log"
 	"sync"
+	"time"
 
 	"github.com/wincentaina/go_messenger_ng/internal/protocol"
 	"github.com/wincentaina/go_messenger_ng/internal/util"
@@ -20,6 +21,11 @@ type envelope struct {
 type clientConn struct {
 	username string
 	send     chan envelope // outbound messages buffered per-client
+
+	// Token-bucket rate limiter for chat messages (TypeSendMsg / TypeGroupMsg).
+	// Accessed only from the per-client readLoop goroutine — no mutex needed.
+	msgTokens  int
+	lastRefill time.Time
 }
 
 // Hub is the central router: it owns the connected-clients map and routes
