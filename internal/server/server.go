@@ -6,10 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net"
-	"os"
-	"os/signal"
 	"sync"
-	"syscall"
 
 	"github.com/wincentaina/go_messenger_ng/internal/protocol"
 	"github.com/wincentaina/go_messenger_ng/internal/server/config"
@@ -91,26 +88,6 @@ func (s *Server) acceptLoop(ln net.Listener) {
 	}
 }
 
-// handleSignals blocks waiting for OS signals.
-func (s *Server) handleSignals(ln net.Listener) error {
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
-
-	for sig := range sigCh {
-		switch sig {
-		case syscall.SIGHUP:
-			// Reload config on SIGHUP without downtime
-			log.Println("SIGHUP: reloading config (feature stub)")
-			s.logger.Log("CONFIG_RELOAD", "", "SIGHUP received")
-
-		case syscall.SIGTERM, syscall.SIGINT:
-			log.Println("shutdown signal received")
-			s.shutdown(ln)
-			return nil
-		}
-	}
-	return nil
-}
 
 // broadcastUserList sends the updated user+online list to all connected clients.
 // Pass newClient when a user just connected — they may not be in hub.clients yet

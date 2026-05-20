@@ -43,3 +43,4 @@ go.work.sum
 # Runtime logs
 /logs/
 *.log
+/CHECKLIST.md
