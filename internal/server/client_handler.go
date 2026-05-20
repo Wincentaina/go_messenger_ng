@@ -104,6 +104,9 @@ func (s *Server) authenticate(conn net.Conn) (string, error) {
 		return "", fmt.Errorf("%s", msg)
 	}
 
+	// Keep BST index up to date (idempotent for existing users)
+	s.hub.RegisterUser(req.Username)
+
 	_ = protocol.Encode(conn, protocol.TypeAuthResp, protocol.AuthResp{OK: true, UserID: userID})
 	return req.Username, nil
 }
@@ -198,11 +201,8 @@ func (s *Server) handleHistoryReq(client *clientConn, raw []byte) {
 }
 
 func (s *Server) handleUserListReq(client *clientConn) {
-	users, err := s.db.ListUsers()
-	if err != nil {
-		log.Printf("list users: %v", err)
-		users = s.hub.OnlineUsers()
-	}
+	// BST.InOrder() gives sorted list in O(n) without hitting the DB
+	users := s.hub.AllUsersSorted()
 	online := s.hub.OnlineUsers()
 	resp := protocol.UserListResp{Users: users, Online: online}
 	respRaw, _ := json.Marshal(resp)

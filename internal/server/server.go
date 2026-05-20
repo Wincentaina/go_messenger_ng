@@ -57,6 +57,14 @@ func (s *Server) Run(tlsCfg *tls.Config) error {
 	}
 	defer ln.Close()
 
+	// Preload all registered usernames into the BST index on startup
+	if users, err := s.db.ListUsers(); err == nil {
+		for _, u := range users {
+			s.hub.RegisterUser(u)
+		}
+		log.Printf("BST: loaded %d users", len(users))
+	}
+
 	go s.hub.Run()
 	s.logger.Log("SERVER_START", "", fmt.Sprintf("addr=%s", addr))
 	log.Printf("server listening on %s (TLS)", addr)
@@ -103,19 +111,18 @@ func (s *Server) handleSignals(ln net.Listener) error {
 // Pass newClient when a user just connected — they may not be in hub.clients yet
 // due to the async registration channel, so we send to them directly and include
 // them in the online set manually.
+// broadcastUserList sends the updated user+online list to all connected clients.
+// Users are fetched from the in-memory BST (O(n) sorted traversal, no DB round-trip).
+// Pass newClient when a freshly authenticated user may not be in hub.clients yet.
 func (s *Server) broadcastUserList(newClient ...*clientConn) {
-	users, err := s.db.ListUsers()
-	if err != nil {
-		log.Printf("broadcastUserList: %v", err)
-		return
-	}
+	// BST inorder gives alphabetically sorted usernames without extra sort pass
+	users := s.hub.AllUsersSorted()
 
 	s.hub.mu.RLock()
 	onlineSet := make(map[string]bool, len(s.hub.clients)+1)
 	for name := range s.hub.clients {
 		onlineSet[name] = true
 	}
-	// Include the new client even if hub hasn't processed the registration yet
 	var extra *clientConn
 	if len(newClient) > 0 && newClient[0] != nil {
 		extra = newClient[0]
@@ -136,7 +143,6 @@ func (s *Server) broadcastUserList(newClient ...*clientConn) {
 	}
 	s.hub.mu.RUnlock()
 
-	// Send directly to the new client (not in hub.clients yet)
 	if extra != nil {
 		select {
 		case extra.send <- envelope{t: protocol.TypeUserListResp, payload: raw}:
