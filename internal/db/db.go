@@ -4,7 +4,6 @@ package db
 import (
 	"database/sql"
 	"fmt"
-	"log"
 	"time"
 
 	_ "github.com/lib/pq" // postgres driver
@@ -61,7 +60,6 @@ func (p *Postgres) CheckPassword(username, password string) (int, bool, error) {
 	err := p.conn.QueryRow(
 		`SELECT id, password_hash FROM users WHERE username=$1`, username,
 	).Scan(&id, &hash)
-	log.Printf("db.CheckPassword: username=%q scan_err=%v", username, err)
 	if err == sql.ErrNoRows {
 		return 0, false, nil // user genuinely does not exist
 	}
@@ -287,4 +285,21 @@ func (p *Postgres) GetGroupHistory(groupName string, limit int) ([]protocol.Recv
 		msgs[i], msgs[j] = msgs[j], msgs[i]
 	}
 	return msgs, rows.Err()
+}
+
+// SaveLog persists a server event to the server_logs table.
+// username may be empty for server-level events.
+func (p *Postgres) SaveLog(eventType, username, details string) error {
+	var userID *int
+	if username != "" {
+		var id int
+		if err := p.conn.QueryRow(`SELECT id FROM users WHERE username=$1`, username).Scan(&id); err == nil {
+			userID = &id
+		}
+	}
+	_, err := p.conn.Exec(
+		`INSERT INTO server_logs(event_type, user_id, details) VALUES($1,$2,$3)`,
+		eventType, userID, details,
+	)
+	return err
 }

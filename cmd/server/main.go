@@ -37,6 +37,7 @@ func main() {
 		log.Fatalf("logger: %v", err)
 	}
 	defer logger.Close()
+	logger.SetStore(database)
 
 	tlsCfg, err := crypto.ServerTLS(cfg.TLS.CertFile, cfg.TLS.KeyFile)
 	if err != nil {

@@ -77,8 +77,6 @@ func (s *Server) authenticate(conn net.Conn) (string, error) {
 	req.Username = strings.TrimSpace(req.Username)
 	req.Password = strings.TrimSpace(req.Password)
 
-	log.Printf("auth attempt: username=%q register=%v from=%s", req.Username, req.Register, conn.RemoteAddr())
-
 	if req.Username == "" || req.Password == "" {
 		_ = protocol.Encode(conn, protocol.TypeAuthResp, protocol.AuthResp{
 			OK: false, Message: "логин и пароль не могут быть пустыми",
@@ -95,7 +93,6 @@ func (s *Server) authenticate(conn net.Conn) (string, error) {
 		authOK = err == nil
 	} else {
 		userID, authOK, err = s.db.CheckPassword(req.Username, req.Password)
-		log.Printf("auth check: user=%q ok=%v err=%v", req.Username, authOK, err)
 	}
 
 	if err != nil || !authOK {
@@ -111,6 +108,10 @@ func (s *Server) authenticate(conn net.Conn) (string, error) {
 	s.hub.RegisterUser(req.Username)
 
 	_ = protocol.Encode(conn, protocol.TypeAuthResp, protocol.AuthResp{OK: true, UserID: userID})
+
+	if req.Register {
+		s.logger.Log("USER_REGISTER", req.Username, fmt.Sprintf("addr=%s", conn.RemoteAddr()))
+	}
 	return req.Username, nil
 }
 
@@ -201,6 +202,12 @@ func (s *Server) handleHistoryReq(client *clientConn, raw []byte) {
 		msgs = nil
 	}
 
+	target := req.WithUser
+	if req.WithGroup != "" {
+		target = "#" + req.WithGroup
+	}
+	s.logger.Log("HISTORY_REQ", client.username, fmt.Sprintf("target=%s limit=%d", target, req.Limit))
+
 	resp := protocol.HistoryResp{Messages: msgs}
 	respRaw, _ := json.Marshal(resp)
 	select {
@@ -233,7 +240,7 @@ func (s *Server) handleCreateGroup(client *clientConn, raw []byte) {
 		s.sendError(client, fmt.Sprintf("create group: %v", err))
 		return
 	}
-	log.Printf("group %q created by %s", req.Name, client.username)
+	s.logger.Log("GROUP_CREATED", client.username, fmt.Sprintf("group=%s members=%d", req.Name, len(members)))
 
 	// Notify all group members so their sidebar updates immediately
 	s.notifyGroupMembers(req.Name, members)
@@ -260,7 +267,7 @@ func (s *Server) handleGroupMsg(client *clientConn, raw []byte) {
 		log.Printf("save group message: %v", err)
 	}
 	msg.ID = id
-	log.Printf("group msg saved: id=%d group=%q from=%q replyToID=%d", msg.ID, msg.Group, msg.FromUser, msg.ReplyToID)
+	s.logger.Log("GROUP_MSG_SENT", client.username, fmt.Sprintf("group=%s id=%d", msg.Group, msg.ID))
 
 	outRaw, _ := json.Marshal(msg)
 

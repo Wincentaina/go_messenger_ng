@@ -28,6 +28,7 @@ type DB interface {
 	SaveGroupMessage(msg protocol.GroupMsg) (int64, error)
 	GetGroupHistory(group string, limit int) ([]protocol.RecvMsg, error)
 	GetUserGroups(username string) ([]string, error)
+	SaveLog(eventType, username, details string) error
 }
 
 // Logger is the interface the server uses to record events.
