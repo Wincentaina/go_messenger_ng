@@ -54,6 +54,8 @@ func (p *Postgres) CreateUser(username, password string) (int, error) {
 }
 
 // CheckPassword verifies credentials. Returns (userID, true, nil) on success.
+// If the user row is not found on the first attempt, retries once after 150 ms
+// to tolerate transient replication/connection-pool lag after fresh registration.
 func (p *Postgres) CheckPassword(username, password string) (int, bool, error) {
 	var id int
 	var hash string
@@ -61,7 +63,15 @@ func (p *Postgres) CheckPassword(username, password string) (int, bool, error) {
 		`SELECT id, password_hash FROM users WHERE username=$1`, username,
 	).Scan(&id, &hash)
 	if err == sql.ErrNoRows {
-		return 0, false, nil // treat as wrong password — don't leak username existence
+		// Retry once — guards against the rare case where a just-registered user
+		// is not yet visible on this connection.
+		time.Sleep(150 * time.Millisecond)
+		err = p.conn.QueryRow(
+			`SELECT id, password_hash FROM users WHERE username=$1`, username,
+		).Scan(&id, &hash)
+	}
+	if err == sql.ErrNoRows {
+		return 0, false, nil // user genuinely does not exist
 	}
 	if err != nil {
 		return 0, false, fmt.Errorf("lookup user: %w", err)
