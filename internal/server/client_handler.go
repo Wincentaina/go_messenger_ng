@@ -255,9 +255,12 @@ func (s *Server) handleGroupMsg(client *clientConn, raw []byte) {
 	msg.FromUser = client.username
 	msg.SentAt = time.Now().UTC().Format(time.RFC3339)
 
-	if err := s.db.SaveGroupMessage(msg); err != nil {
+	id, err := s.db.SaveGroupMessage(msg)
+	if err != nil {
 		log.Printf("save group message: %v", err)
 	}
+	msg.ID = id
+	log.Printf("group msg saved: id=%d group=%q from=%q replyToID=%d", msg.ID, msg.Group, msg.FromUser, msg.ReplyToID)
 
 	outRaw, _ := json.Marshal(msg)
 

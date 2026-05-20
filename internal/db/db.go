@@ -236,26 +236,31 @@ func (p *Postgres) GetUserGroups(username string) ([]string, error) {
 	return groups, rows.Err()
 }
 
-// SaveGroupMessage persists a message sent to a group.
-func (p *Postgres) SaveGroupMessage(msg protocol.GroupMsg) error {
+// SaveGroupMessage persists a message sent to a group and returns the assigned ID.
+func (p *Postgres) SaveGroupMessage(msg protocol.GroupMsg) (int64, error) {
 	var fromID, groupID int
 	if err := p.conn.QueryRow(`SELECT id FROM users WHERE username=$1`, msg.FromUser).Scan(&fromID); err != nil {
-		return fmt.Errorf("sender not found: %w", err)
+		return 0, fmt.Errorf("sender not found: %w", err)
 	}
 	if err := p.conn.QueryRow(`SELECT id FROM groups WHERE name=$1`, msg.Group).Scan(&groupID); err != nil {
-		return fmt.Errorf("group not found: %w", err)
+		return 0, fmt.Errorf("group not found: %w", err)
 	}
-	_, err := p.conn.Exec(
-		`INSERT INTO messages(from_user_id, group_id, content) VALUES($1,$2,$3)`,
-		fromID, groupID, msg.Content,
-	)
-	return err
+	var replyTo *int64
+	if msg.ReplyToID > 0 {
+		replyTo = &msg.ReplyToID
+	}
+	var id int64
+	err := p.conn.QueryRow(
+		`INSERT INTO messages(from_user_id, group_id, content, reply_to_id) VALUES($1,$2,$3,$4) RETURNING id`,
+		fromID, groupID, msg.Content, replyTo,
+	).Scan(&id)
+	return id, err
 }
 
 // GetGroupHistory returns up to limit messages in a group, oldest first.
 func (p *Postgres) GetGroupHistory(groupName string, limit int) ([]protocol.RecvMsg, error) {
 	rows, err := p.conn.Query(`
-		SELECT m.id, u.username, g.name, m.content, m.sent_at
+		SELECT m.id, u.username, g.name, m.content, COALESCE(m.reply_to_id, 0), m.sent_at
 		FROM messages m
 		JOIN users  u ON u.id = m.from_user_id
 		JOIN groups g ON g.id = m.group_id
@@ -272,7 +277,7 @@ func (p *Postgres) GetGroupHistory(groupName string, limit int) ([]protocol.Recv
 	for rows.Next() {
 		var m protocol.RecvMsg
 		var ts time.Time
-		if err := rows.Scan(&m.ID, &m.FromUser, &m.ToGroup, &m.Content, &ts); err != nil {
+		if err := rows.Scan(&m.ID, &m.FromUser, &m.ToGroup, &m.Content, &m.ReplyToID, &ts); err != nil {
 			return nil, err
 		}
 		m.SentAt = ts.UTC().Format(time.RFC3339)

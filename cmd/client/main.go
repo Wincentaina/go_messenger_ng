@@ -20,6 +20,12 @@ func main() {
 	cfgPath := flag.String("config", "config/client.yaml", "path to client config")
 	flag.Parse()
 
+	// Redirect all log output to a file so it doesn't corrupt the tview TUI.
+	if f, err := os.OpenFile("logs/client.log", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644); err == nil {
+		log.SetOutput(f)
+		defer f.Close()
+	}
+
 	// tcell (used by tview) enables mouse/focus event reporting and may not
 	// disable it if the previous session was killed without proper cleanup.
 	// Emit the corresponding disable sequences and drain any stale stdin bytes

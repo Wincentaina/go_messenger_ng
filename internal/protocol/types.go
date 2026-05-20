@@ -108,10 +108,12 @@ type CreateGroup struct {
 
 // GroupMsg is used for both sending and receiving group messages.
 type GroupMsg struct {
+	ID        int64  `json:"id,omitempty"` // assigned by server after saving
 	Group     string `json:"group"`
 	Content   string `json:"content"`
 	FromUser  string `json:"from_user,omitempty"` // filled by server on delivery
 	SentAt    string `json:"sent_at,omitempty"`
+	ReplyToID int64  `json:"reply_to_id,omitempty"`
 }
 
 // ErrorMsg carries an error description from the server.

@@ -18,6 +18,7 @@ package ui
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 
 	"github.com/gdamore/tcell/v2"
@@ -50,6 +51,9 @@ type App struct {
 
 	// replyTo holds the message being replied to (zero value = no reply).
 	replyTo protocol.RecvMsg
+	// replyMap caches original messages by ID so formatMessage can show the
+	// quote even if the message has been evicted from the conversation cache.
+	replyMap map[int64]protocol.RecvMsg
 
 	// root layout — needed to attach modal dialogs
 	root *tview.Flex
@@ -58,10 +62,11 @@ type App struct {
 // New creates the App but doesn't run it yet.
 func New(conn *client.Conn, me string, cache *client.MessageCache) *App {
 	a := &App{
-		tapp:  tview.NewApplication(),
-		conn:  conn,
-		me:    me,
-		cache: cache,
+		tapp:     tview.NewApplication(),
+		conn:     conn,
+		me:       me,
+		cache:    cache,
+		replyMap: make(map[int64]protocol.RecvMsg),
 	}
 	a.buildLayout()
 	return a
@@ -219,8 +224,9 @@ func (a *App) sendCurrentInput() {
 
 	if a.isGroup {
 		a.conn.Send(protocol.TypeGroupMsg, protocol.GroupMsg{
-			Group:   strings.TrimPrefix(a.currentChat, "#"),
-			Content: text,
+			Group:     strings.TrimPrefix(a.currentChat, "#"),
+			Content:   text,
+			ReplyToID: replyID,
 		})
 	} else {
 		a.conn.Send(protocol.TypeSendMsg, protocol.SendMsg{
@@ -290,6 +296,9 @@ func (a *App) showReplyPicker() {
 // setReplyTo stores the chosen message and updates the input label.
 func (a *App) setReplyTo(m protocol.RecvMsg) {
 	a.replyTo = m
+	if m.ID > 0 {
+		a.replyMap[m.ID] = m // persist for quote rendering after clearReply
+	}
 	preview := m.Content
 	if len([]rune(preview)) > 30 {
 		preview = string([]rune(preview)[:30]) + "…"
@@ -353,13 +362,19 @@ func (a *App) handleIncoming(msg client.Incoming) {
 		if err := json.Unmarshal(msg.Payload, &m); err != nil {
 			return
 		}
+		log.Printf("ui: TypeGroupMsg id=%d group=%q from=%q replyToID=%d", m.ID, m.Group, m.FromUser, m.ReplyToID)
 		recv := protocol.RecvMsg{
-			FromUser: m.FromUser,
-			ToGroup:  m.Group,
-			Content:  m.Content,
-			SentAt:   m.SentAt,
+			ID:        m.ID,
+			FromUser:  m.FromUser,
+			ToGroup:   m.Group,
+			Content:   m.Content,
+			SentAt:    m.SentAt,
+			ReplyToID: m.ReplyToID,
 		}
 		a.cache.Add(recv)
+		if recv.ID > 0 {
+			a.replyMap[recv.ID] = recv
+		}
 
 		a.tapp.QueueUpdateDraw(func() {
 			if "#"+m.Group == a.currentChat {
@@ -379,6 +394,11 @@ func (a *App) handleIncoming(msg client.Incoming) {
 		// Prevents stale responses from overwriting the current view.
 		for _, m := range resp.Messages {
 			a.cache.Add(m)
+			// Populate replyMap so quote display works for all history messages
+			if m.ID > 0 {
+				a.replyMap[m.ID] = m
+				log.Printf("ui: history add to replyMap id=%d from=%q replyToID=%d", m.ID, m.FromUser, m.ReplyToID)
+			}
 		}
 		a.tapp.QueueUpdateDraw(func() {
 			if a.pendingHistoryFor == a.currentChat {
@@ -452,8 +472,13 @@ func (a *App) formatMessage(m protocol.RecvMsg) string {
 		ts, nameColor, m.FromUser, m.Content)
 }
 
-// findMessageByID looks up a message by ID in the current chat's cache.
+// findMessageByID looks up a message by ID, checking replyMap first (always
+// populated at reply-selection time), then falling back to the conversation cache.
 func (a *App) findMessageByID(id int64) *protocol.RecvMsg {
+	if m, ok := a.replyMap[id]; ok {
+		log.Printf("ui: findMessageByID id=%d found in replyMap", id)
+		return &m
+	}
 	var msgs []protocol.RecvMsg
 	if a.isGroup {
 		msgs = a.cache.GetGroup(strings.TrimPrefix(a.currentChat, "#"))
@@ -462,9 +487,11 @@ func (a *App) findMessageByID(id int64) *protocol.RecvMsg {
 	}
 	for i := range msgs {
 		if msgs[i].ID == id {
+			log.Printf("ui: findMessageByID id=%d found in cache", id)
 			return &msgs[i]
 		}
 	}
+	log.Printf("ui: findMessageByID id=%d NOT FOUND (replyMap size=%d, cache size=%d)", id, len(a.replyMap), len(msgs))
 	return nil
 }
 

@@ -25,7 +25,7 @@ type DB interface {
 	ListUsers() ([]string, error)
 	CreateGroup(name, createdBy string, members []string) error
 	GetGroupMembers(name string) ([]string, error)
-	SaveGroupMessage(msg protocol.GroupMsg) error
+	SaveGroupMessage(msg protocol.GroupMsg) (int64, error)
 	GetGroupHistory(group string, limit int) ([]protocol.RecvMsg, error)
 	GetUserGroups(username string) ([]string, error)
 }
