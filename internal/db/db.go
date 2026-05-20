@@ -294,6 +294,22 @@ func (p *Postgres) GetGroupHistory(groupName string, limit int) ([]protocol.Recv
 	return msgs, rows.Err()
 }
 
+// AddGroupMember adds a user to an existing group (idempotent).
+func (p *Postgres) AddGroupMember(groupName, username string) error {
+	var groupID, userID int
+	if err := p.conn.QueryRow(`SELECT id FROM groups WHERE name=$1`, groupName).Scan(&groupID); err != nil {
+		return fmt.Errorf("группа не найдена")
+	}
+	if err := p.conn.QueryRow(`SELECT id FROM users WHERE username=$1 AND NOT is_deleted`, username).Scan(&userID); err != nil {
+		return fmt.Errorf("пользователь не найден")
+	}
+	_, err := p.conn.Exec(
+		`INSERT INTO group_members(group_id, user_id) VALUES($1,$2) ON CONFLICT DO NOTHING`,
+		groupID, userID,
+	)
+	return err
+}
+
 // LeaveGroup removes a user from a group's member list.
 func (p *Postgres) LeaveGroup(groupName, username string) error {
 	_, err := p.conn.Exec(`

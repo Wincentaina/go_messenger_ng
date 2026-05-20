@@ -83,7 +83,7 @@ func (a *App) Run() error {
 func (a *App) buildLayout() {
 	a.titleBar = tview.NewTextView().
 		SetDynamicColors(true).
-		SetText(fmt.Sprintf("[yellow]go-messenger[-]  вы: [green]%s[-]  |  Tab — панель  |  Ctrl+N — группа  |  Ctrl+R — ответить  |  Ctrl+L — выйти из группы  |  Ctrl+D — удалить аккаунт  |  Ctrl+C — выход", a.me))
+		SetText(fmt.Sprintf("[yellow]go-messenger[-]  вы: [green]%s[-]  |  Tab — панель  |  Ctrl+N — группа  |  Ctrl+A — добавить в группу  |  Ctrl+L — выйти из группы  |  Ctrl+R — ответить  |  Ctrl+D — удалить аккаунт  |  Ctrl+C — выход", a.me))
 
 	// Left panel: list of users/groups.
 	// SetChangedFunc fires on arrow-key navigation — only updates the title.
@@ -144,6 +144,11 @@ func (a *App) buildLayout() {
 		// Ctrl+R opens message picker for reply
 		if event.Key() == tcell.KeyCtrlR {
 			a.showReplyPicker()
+			return nil
+		}
+		// Ctrl+A — add user to current group
+		if event.Key() == tcell.KeyCtrlA {
+			a.showAddToGroupDialog()
 			return nil
 		}
 		// Ctrl+L — leave the current group chat
@@ -503,6 +508,40 @@ func (a *App) findMessageByID(id int64) *protocol.RecvMsg {
 	}
 	log.Printf("ui: findMessageByID id=%d NOT FOUND (replyMap size=%d, cache size=%d)", id, len(a.replyMap), len(msgs))
 	return nil
+}
+
+// showAddToGroupDialog opens a modal to add a user to the current group.
+func (a *App) showAddToGroupDialog() {
+	if !a.isGroup {
+		a.setStatus("[red]Ctrl+A работает только в группах[-]")
+		return
+	}
+	groupName := strings.TrimPrefix(a.currentChat, "#")
+
+	var form *tview.Form
+	form = tview.NewForm().
+		AddInputField("Имя пользователя", "", 24, nil, nil).
+		AddButton("Добавить", func() {
+			username := strings.TrimSpace(form.GetFormItemByLabel("Имя пользователя").(*tview.InputField).GetText())
+			if username != "" {
+				a.conn.Send(protocol.TypeAddToGroup, protocol.AddToGroup{Group: groupName, User: username})
+			}
+			a.tapp.SetRoot(a.root, true).SetFocus(a.inputField)
+		}).
+		AddButton("Отмена", func() {
+			a.tapp.SetRoot(a.root, true).SetFocus(a.inputField)
+		})
+	form.SetBorder(true).SetTitle(fmt.Sprintf(" Добавить в #%s ", groupName))
+
+	modal := tview.NewFlex().
+		AddItem(nil, 0, 1, false).
+		AddItem(tview.NewFlex().SetDirection(tview.FlexRow).
+			AddItem(nil, 0, 1, false).
+			AddItem(form, 9, 0, true).
+			AddItem(nil, 0, 1, false), 44, 0, true).
+		AddItem(nil, 0, 1, false)
+
+	a.tapp.SetRoot(modal, true).SetFocus(form)
 }
 
 // leaveCurrentGroup shows a confirmation modal before leaving the current group.

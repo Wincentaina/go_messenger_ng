@@ -140,6 +140,9 @@ func (s *Server) readLoop(conn net.Conn, client *clientConn) {
 		case protocol.TypeGroupMsg:
 			s.handleGroupMsg(client, raw)
 
+		case protocol.TypeAddToGroup:
+			s.handleAddToGroup(client, raw)
+
 		case protocol.TypeLeaveGroup:
 			s.handleLeaveGroup(client, raw)
 
@@ -323,6 +326,25 @@ func (s *Server) notifyGroupMembers(groupName string, members []string) {
 		}
 	}
 	s.hub.mu.RUnlock()
+}
+
+func (s *Server) handleAddToGroup(client *clientConn, raw []byte) {
+	var req protocol.AddToGroup
+	if err := json.Unmarshal(raw, &req); err != nil || req.Group == "" || req.User == "" {
+		s.sendError(client, "invalid add_to_group payload")
+		return
+	}
+
+	if err := s.db.AddGroupMember(req.Group, req.User); err != nil {
+		s.sendError(client, err.Error())
+		return
+	}
+
+	s.logger.Log("GROUP_ADD_MEMBER", client.username, fmt.Sprintf("group=%s user=%s", req.Group, req.User))
+
+	// Notify all current members (including the new one) so their sidebars update
+	members, _ := s.db.GetGroupMembers(req.Group)
+	s.notifyGroupMembers(req.Group, members)
 }
 
 func (s *Server) handleLeaveGroup(client *clientConn, raw []byte) {

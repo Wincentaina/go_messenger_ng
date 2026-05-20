@@ -28,6 +28,7 @@ type DB interface {
 	SaveGroupMessage(msg protocol.GroupMsg) (int64, error)
 	GetGroupHistory(group string, limit int) ([]protocol.RecvMsg, error)
 	GetUserGroups(username string) ([]string, error)
+	AddGroupMember(groupName, username string) error
 	LeaveGroup(groupName, username string) error
 	SoftDeleteUser(username string) error
 	SaveLog(eventType, username, details string) error
