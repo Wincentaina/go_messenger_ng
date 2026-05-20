@@ -39,7 +39,9 @@ const (
 	TypeCreateGroup  MsgType = 0x09
 	TypeGroupMsg     MsgType = 0x0A
 	TypeError        MsgType = 0x0B
-	TypeServerShutdown MsgType = 0x0C
+	TypeServerShutdown  MsgType = 0x0C
+	TypeLeaveGroup      MsgType = 0x0D
+	TypeDeleteAccount   MsgType = 0x0E
 )
 
 // --- Payload structs ---------------------------------------------------------
@@ -126,6 +128,15 @@ type ErrorMsg struct {
 type ServerShutdown struct {
 	Reason string `json:"reason"`
 }
+
+// LeaveGroup is sent by the client to leave a group chat.
+type LeaveGroup struct {
+	Group string `json:"group"`
+}
+
+// DeleteAccountReq is sent by the client to soft-delete their own account.
+// The server removes the user from listings and disconnects them.
+type DeleteAccountReq struct{}
 
 // --- Encode / Decode ---------------------------------------------------------
 

@@ -86,6 +86,11 @@ func (h *Hub) RegisterUser(username string) {
 	h.userIndex.Insert(username)
 }
 
+// RemoveUser removes a username from the BST index (used on account deletion).
+func (h *Hub) RemoveUser(username string) {
+	h.userIndex.Delete(username)
+}
+
 // AllUsersSorted returns all known usernames in alphabetical order using BST inorder traversal.
 func (h *Hub) AllUsersSorted() []string {
 	return h.userIndex.InOrder()

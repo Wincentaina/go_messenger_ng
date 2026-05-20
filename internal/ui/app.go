@@ -83,7 +83,7 @@ func (a *App) Run() error {
 func (a *App) buildLayout() {
 	a.titleBar = tview.NewTextView().
 		SetDynamicColors(true).
-		SetText(fmt.Sprintf("[yellow]go-messenger[-]  вы: [green]%s[-]  |  Tab — панель  |  Ctrl+N — группа  |  Ctrl+R — ответить  |  Ctrl+C — выход", a.me))
+		SetText(fmt.Sprintf("[yellow]go-messenger[-]  вы: [green]%s[-]  |  Tab — панель  |  Ctrl+N — группа  |  Ctrl+R — ответить  |  Ctrl+L — выйти из группы  |  Ctrl+D — удалить аккаунт  |  Ctrl+C — выход", a.me))
 
 	// Left panel: list of users/groups.
 	// SetChangedFunc fires on arrow-key navigation — only updates the title.
@@ -144,6 +144,16 @@ func (a *App) buildLayout() {
 		// Ctrl+R opens message picker for reply
 		if event.Key() == tcell.KeyCtrlR {
 			a.showReplyPicker()
+			return nil
+		}
+		// Ctrl+L — leave the current group chat
+		if event.Key() == tcell.KeyCtrlL {
+			a.leaveCurrentGroup()
+			return nil
+		}
+		// Ctrl+D — delete own account (with confirmation)
+		if event.Key() == tcell.KeyCtrlD {
+			a.showDeleteAccountDialog()
 			return nil
 		}
 		return event
@@ -493,6 +503,38 @@ func (a *App) findMessageByID(id int64) *protocol.RecvMsg {
 	}
 	log.Printf("ui: findMessageByID id=%d NOT FOUND (replyMap size=%d, cache size=%d)", id, len(a.replyMap), len(msgs))
 	return nil
+}
+
+// leaveCurrentGroup sends a LeaveGroup request for the currently open group chat.
+func (a *App) leaveCurrentGroup() {
+	if !a.isGroup {
+		a.setStatus("[red]Ctrl+L работает только в группах[-]")
+		return
+	}
+	groupName := strings.TrimPrefix(a.currentChat, "#")
+	a.conn.Send(protocol.TypeLeaveGroup, protocol.LeaveGroup{Group: groupName})
+	// Server will respond with updated UserListResp; the group vanishes from sidebar.
+	a.currentChat = ""
+	a.isGroup = false
+	a.chatView.SetTitle(" Чат ")
+	a.chatView.SetText("")
+	a.setStatus(fmt.Sprintf("[yellow]Вы покинули группу #%s[-]", groupName))
+}
+
+// showDeleteAccountDialog shows a confirmation modal before soft-deleting the account.
+func (a *App) showDeleteAccountDialog() {
+	modal := tview.NewModal().
+		SetText(fmt.Sprintf("Удалить аккаунт [red]%s[-]?\nЭто действие нельзя отменить.\nВаши сообщения останутся как 'deleted_user'.", a.me)).
+		AddButtons([]string{"Удалить", "Отмена"}).
+		SetDoneFunc(func(_ int, label string) {
+			if label == "Удалить" {
+				a.conn.Send(protocol.TypeDeleteAccount, protocol.DeleteAccountReq{})
+				a.tapp.Stop()
+			} else {
+				a.tapp.SetRoot(a.root, true).SetFocus(a.inputField)
+			}
+		})
+	a.tapp.SetRoot(modal, true).SetFocus(modal)
 }
 
 // showNewGroupDialog opens a modal input for creating a new group.

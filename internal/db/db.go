@@ -58,7 +58,7 @@ func (p *Postgres) CheckPassword(username, password string) (int, bool, error) {
 	var id int
 	var hash string
 	err := p.conn.QueryRow(
-		`SELECT id, password_hash FROM users WHERE username=$1`, username,
+		`SELECT id, password_hash FROM users WHERE username=$1 AND NOT is_deleted`, username,
 	).Scan(&id, &hash)
 	if err == sql.ErrNoRows {
 		return 0, false, nil // user genuinely does not exist
@@ -73,9 +73,9 @@ func (p *Postgres) CheckPassword(username, password string) (int, bool, error) {
 	return id, true, nil
 }
 
-// ListUsers returns all registered usernames sorted alphabetically.
+// ListUsers returns all active (non-deleted) usernames sorted alphabetically.
 func (p *Postgres) ListUsers() ([]string, error) {
-	rows, err := p.conn.Query(`SELECT username FROM users ORDER BY username`)
+	rows, err := p.conn.Query(`SELECT username FROM users WHERE NOT is_deleted ORDER BY username`)
 	if err != nil {
 		return nil, err
 	}
@@ -119,8 +119,10 @@ func (p *Postgres) SaveMessage(msg protocol.RecvMsg) (int64, error) {
 // GetHistory returns up to limit DMs between userA and userB, oldest first.
 func (p *Postgres) GetHistory(userA, userB string, limit int) ([]protocol.RecvMsg, error) {
 	rows, err := p.conn.Query(`
-		SELECT m.id, u_from.username, u_to.username, m.content,
-		       COALESCE(m.reply_to_id, 0), m.sent_at
+		SELECT m.id,
+		       CASE WHEN u_from.is_deleted THEN 'deleted_user' ELSE u_from.username END,
+		       CASE WHEN u_to.is_deleted   THEN 'deleted_user' ELSE u_to.username   END,
+		       m.content, COALESCE(m.reply_to_id, 0), m.sent_at
 		FROM messages m
 		JOIN users u_from ON u_from.id = m.from_user_id
 		JOIN users u_to   ON u_to.id   = m.to_user_id
@@ -258,7 +260,9 @@ func (p *Postgres) SaveGroupMessage(msg protocol.GroupMsg) (int64, error) {
 // GetGroupHistory returns up to limit messages in a group, oldest first.
 func (p *Postgres) GetGroupHistory(groupName string, limit int) ([]protocol.RecvMsg, error) {
 	rows, err := p.conn.Query(`
-		SELECT m.id, u.username, g.name, m.content, COALESCE(m.reply_to_id, 0), m.sent_at
+		SELECT m.id,
+		       CASE WHEN u.is_deleted THEN 'deleted_user' ELSE u.username END,
+		       g.name, m.content, COALESCE(m.reply_to_id, 0), m.sent_at
 		FROM messages m
 		JOIN users  u ON u.id = m.from_user_id
 		JOIN groups g ON g.id = m.group_id
@@ -285,6 +289,24 @@ func (p *Postgres) GetGroupHistory(groupName string, limit int) ([]protocol.Recv
 		msgs[i], msgs[j] = msgs[j], msgs[i]
 	}
 	return msgs, rows.Err()
+}
+
+// LeaveGroup removes a user from a group's member list.
+func (p *Postgres) LeaveGroup(groupName, username string) error {
+	_, err := p.conn.Exec(`
+		DELETE FROM group_members
+		WHERE group_id = (SELECT id FROM groups WHERE name=$1)
+		  AND user_id  = (SELECT id FROM users  WHERE username=$2)`,
+		groupName, username,
+	)
+	return err
+}
+
+// SoftDeleteUser marks a user as deleted without removing their data.
+// Deleted users cannot log in and are hidden from all user listings.
+func (p *Postgres) SoftDeleteUser(username string) error {
+	_, err := p.conn.Exec(`UPDATE users SET is_deleted = TRUE WHERE username=$1`, username)
+	return err
 }
 
 // SaveLog persists a server event to the server_logs table.

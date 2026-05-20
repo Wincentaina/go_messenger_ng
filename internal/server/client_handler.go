@@ -140,6 +140,13 @@ func (s *Server) readLoop(conn net.Conn, client *clientConn) {
 		case protocol.TypeGroupMsg:
 			s.handleGroupMsg(client, raw)
 
+		case protocol.TypeLeaveGroup:
+			s.handleLeaveGroup(client, raw)
+
+		case protocol.TypeDeleteAccount:
+			s.handleDeleteAccount(client)
+			return // disconnect immediately after deletion
+
 		default:
 			log.Printf("unknown message type %#x from %s", t, client.username)
 		}
@@ -316,6 +323,48 @@ func (s *Server) notifyGroupMembers(groupName string, members []string) {
 		}
 	}
 	s.hub.mu.RUnlock()
+}
+
+func (s *Server) handleLeaveGroup(client *clientConn, raw []byte) {
+	var req protocol.LeaveGroup
+	if err := json.Unmarshal(raw, &req); err != nil || req.Group == "" {
+		s.sendError(client, "invalid leave_group payload")
+		return
+	}
+
+	if err := s.db.LeaveGroup(req.Group, client.username); err != nil {
+		log.Printf("leave group: %v", err)
+		s.sendError(client, fmt.Sprintf("leave group: %v", err))
+		return
+	}
+
+	s.logger.Log("GROUP_LEAVE", client.username, fmt.Sprintf("group=%s", req.Group))
+
+	// Notify remaining members so their sidebar refreshes
+	remaining, _ := s.db.GetGroupMembers(req.Group)
+	s.notifyGroupMembers(req.Group, remaining)
+
+	// Send updated UserListResp to the leaving user (group is gone from their list)
+	groups, _ := s.db.GetUserGroups(client.username)
+	users := s.hub.AllUsersSorted()
+	online := s.hub.OnlineUsers()
+	respRaw, _ := json.Marshal(protocol.UserListResp{Users: users, Online: online, Groups: groups})
+	select {
+	case client.send <- envelope{t: protocol.TypeUserListResp, payload: respRaw}:
+	default:
+	}
+}
+
+func (s *Server) handleDeleteAccount(client *clientConn) {
+	if err := s.db.SoftDeleteUser(client.username); err != nil {
+		log.Printf("soft delete user %s: %v", client.username, err)
+		s.sendError(client, "не удалось удалить аккаунт")
+		return
+	}
+	s.hub.RemoveUser(client.username) // remove from BST so they vanish from all user lists
+	s.logger.Log("USER_DELETE", client.username, "soft delete")
+	// readLoop returns after this, firing handleConn's defer:
+	// hub.unregister (removes from online map) → broadcastUserList (without deleted user)
 }
 
 func (s *Server) sendError(client *clientConn, msg string) {
