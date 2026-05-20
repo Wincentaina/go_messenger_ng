@@ -48,6 +48,9 @@ type App struct {
 	// so we don't overwrite the current view with a stale response.
 	pendingHistoryFor string
 
+	// replyTo holds the message being replied to (zero value = no reply).
+	replyTo protocol.RecvMsg
+
 	// root layout — needed to attach modal dialogs
 	root *tview.Flex
 }
@@ -129,6 +132,19 @@ func (a *App) buildLayout() {
 			a.tapp.SetFocus(a.userList)
 			return nil
 		}
+		if event.Key() == tcell.KeyEsc {
+			a.clearReply()
+			return nil
+		}
+		return event
+	})
+
+	// 'r' in chatView starts a reply to the last visible message.
+	a.chatView.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		if event.Rune() == 'r' {
+			a.startReplyToLast()
+			return nil
+		}
 		return event
 	})
 
@@ -202,6 +218,9 @@ func (a *App) sendCurrentInput() {
 		return
 	}
 
+	replyID := a.replyTo.ID
+	a.clearReply()
+
 	if a.isGroup {
 		a.conn.Send(protocol.TypeGroupMsg, protocol.GroupMsg{
 			Group:   strings.TrimPrefix(a.currentChat, "#"),
@@ -209,10 +228,37 @@ func (a *App) sendCurrentInput() {
 		})
 	} else {
 		a.conn.Send(protocol.TypeSendMsg, protocol.SendMsg{
-			ToUser:  a.currentChat,
-			Content: text,
+			ToUser:    a.currentChat,
+			Content:   text,
+			ReplyToID: replyID,
 		})
 	}
+}
+
+// startReplyToLast picks the last message in the current chat for replying.
+func (a *App) startReplyToLast() {
+	var msgs []protocol.RecvMsg
+	if a.isGroup {
+		msgs = a.cache.GetGroup(strings.TrimPrefix(a.currentChat, "#"))
+	} else {
+		msgs = a.cache.Get(a.me, a.currentChat)
+	}
+	if len(msgs) == 0 {
+		return
+	}
+	a.replyTo = msgs[len(msgs)-1]
+	preview := a.replyTo.Content
+	if len([]rune(preview)) > 30 {
+		preview = string([]rune(preview)[:30]) + "…"
+	}
+	a.inputField.SetLabel(fmt.Sprintf(" ↩ %s: %s > ", a.replyTo.FromUser, preview))
+	a.tapp.SetFocus(a.inputField)
+}
+
+// clearReply resets the reply state and restores the normal input label.
+func (a *App) clearReply() {
+	a.replyTo = protocol.RecvMsg{}
+	a.inputField.SetLabel(" > ")
 }
 
 // listenIncoming receives server messages and updates the UI via QueueUpdateDraw.
