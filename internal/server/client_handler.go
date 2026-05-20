@@ -385,6 +385,24 @@ func (s *Server) handleLeaveGroup(client *clientConn, raw []byte) {
 	remaining, _ := s.db.GetGroupMembers(req.Group)
 	s.notifyGroupMembers(req.Group, remaining)
 
+	// Broadcast system message to remaining members
+	sysMsg := protocol.GroupMsg{
+		Group:   req.Group,
+		Content: fmt.Sprintf("%s покинул группу", client.username),
+		SentAt:  time.Now().UTC().Format(time.RFC3339),
+	}
+	sysMsgRaw, _ := json.Marshal(sysMsg)
+	s.hub.mu.RLock()
+	for _, member := range remaining {
+		if c, ok := s.hub.clients[member]; ok {
+			select {
+			case c.send <- envelope{t: protocol.TypeGroupMsg, payload: sysMsgRaw}:
+			default:
+			}
+		}
+	}
+	s.hub.mu.RUnlock()
+
 	// Send updated UserListResp to the leaving user (group is gone from their list)
 	groups, _ := s.db.GetUserGroups(client.username)
 	users := s.hub.AllUsersSorted()
