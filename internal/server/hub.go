@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/wincentaina/go_messenger_ng/internal/protocol"
+	"github.com/wincentaina/go_messenger_ng/internal/util"
 )
 
 // envelope pairs a message type with its raw payload for routing.
@@ -23,13 +24,18 @@ type clientConn struct {
 
 // Hub is the central router: it owns the connected-clients map and routes
 // messages between them. Only the Hub goroutine touches the map — no mutex needed.
+//
+// userIndex is a BST that keeps all *registered* usernames sorted.
+// It gives O(log n) lookup and O(n) sorted traversal — useful for UserListResp
+// which must return an alphabetically sorted list on every login event.
 type Hub struct {
 	register   chan *clientConn
 	unregister chan *clientConn
-	route      chan routeMsg  // incoming messages to be delivered
+	route      chan routeMsg
 
-	mu      sync.RWMutex
-	clients map[string]*clientConn // username → conn
+	mu        sync.RWMutex
+	clients   map[string]*clientConn // username → conn (online only)
+	userIndex *util.BST              // all registered usernames, sorted
 }
 
 // routeMsg is a message arriving from one client destined for another.
@@ -45,6 +51,7 @@ func NewHub() *Hub {
 		unregister: make(chan *clientConn, 8),
 		route:      make(chan routeMsg, 256),
 		clients:    make(map[string]*clientConn),
+		userIndex:  &util.BST{},
 	}
 }
 
@@ -73,9 +80,19 @@ func (h *Hub) Run() {
 	}
 }
 
+// RegisterUser adds a username to the persistent BST index.
+// Call this after a user successfully registers or logs in for the first time.
+func (h *Hub) RegisterUser(username string) {
+	h.userIndex.Insert(username)
+}
+
+// AllUsersSorted returns all known usernames in alphabetical order using BST inorder traversal.
+func (h *Hub) AllUsersSorted() []string {
+	return h.userIndex.InOrder()
+}
+
 // deliver routes a message to the intended recipient.
 func (h *Hub) deliver(msg routeMsg) {
-	// Decode just enough to find the target username
 	var target struct {
 		ToUser  string `json:"to_user"`
 		ToGroup string `json:"to_group"`
@@ -96,7 +113,6 @@ func (h *Hub) deliver(msg routeMsg) {
 				log.Printf("hub: send buffer full for %s, dropping message", target.ToUser)
 			}
 		}
-		// If user is offline the message is still saved to DB (handled in client_handler)
 	}
 }
 
