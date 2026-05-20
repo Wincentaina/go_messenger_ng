@@ -172,6 +172,9 @@ func (p *Postgres) CreateGroup(name, createdBy string, members []string) error {
 		`INSERT INTO groups(name, created_by) VALUES($1,$2) RETURNING id`, name, creatorID,
 	).Scan(&groupID)
 	if err != nil {
+		if pgErr, ok := err.(*pq.Error); ok && pgErr.Code == "23505" {
+			return fmt.Errorf("группа с таким именем уже существует")
+		}
 		return fmt.Errorf("create group: %w", err)
 	}
 
@@ -240,11 +243,17 @@ func (p *Postgres) GetUserGroups(username string) ([]string, error) {
 }
 
 // SaveGroupMessage persists a message sent to a group and returns the assigned ID.
+// If msg.FromUser is empty the message is treated as a system notification (from_user_id = NULL).
 func (p *Postgres) SaveGroupMessage(msg protocol.GroupMsg) (int64, error) {
-	var fromID, groupID int
-	if err := p.conn.QueryRow(`SELECT id FROM users WHERE username=$1`, msg.FromUser).Scan(&fromID); err != nil {
-		return 0, fmt.Errorf("sender not found: %w", err)
+	var fromID *int
+	if msg.FromUser != "" {
+		var id int
+		if err := p.conn.QueryRow(`SELECT id FROM users WHERE username=$1`, msg.FromUser).Scan(&id); err != nil {
+			return 0, fmt.Errorf("sender not found: %w", err)
+		}
+		fromID = &id
 	}
+	var groupID int
 	if err := p.conn.QueryRow(`SELECT id FROM groups WHERE name=$1`, msg.Group).Scan(&groupID); err != nil {
 		return 0, fmt.Errorf("group not found: %w", err)
 	}
@@ -264,11 +273,13 @@ func (p *Postgres) SaveGroupMessage(msg protocol.GroupMsg) (int64, error) {
 func (p *Postgres) GetGroupHistory(groupName string, limit int) ([]protocol.RecvMsg, error) {
 	rows, err := p.conn.Query(`
 		SELECT m.id,
-		       CASE WHEN u.is_deleted THEN 'deleted_user' ELSE u.username END,
+		       CASE WHEN m.from_user_id IS NULL THEN ''
+		            WHEN u.is_deleted THEN 'deleted_user'
+		            ELSE u.username END,
 		       g.name, m.content, COALESCE(m.reply_to_id, 0), m.sent_at
 		FROM messages m
-		JOIN users  u ON u.id = m.from_user_id
-		JOIN groups g ON g.id = m.group_id
+		LEFT JOIN users  u ON u.id = m.from_user_id
+		JOIN      groups g ON g.id = m.group_id
 		WHERE g.name = $1
 		ORDER BY m.sent_at DESC
 		LIMIT $2`, groupName, limit,
@@ -314,7 +325,7 @@ func (p *Postgres) AddGroupMember(groupName, username string) error {
 func (p *Postgres) LeaveGroup(groupName, username string) error {
 	_, err := p.conn.Exec(`
 		DELETE FROM group_members
-		WHERE group_id = (SELECT id FROM groups WHERE name=$1)
+		WHERE group_id IN (SELECT id FROM groups WHERE name=$1)
 		  AND user_id  = (SELECT id FROM users  WHERE username=$2)`,
 		groupName, username,
 	)

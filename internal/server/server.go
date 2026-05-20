@@ -53,7 +53,18 @@ func New(cfg config.Config, db DB, logger Logger) *Server {
 // On SIGHUP it reloads the server config (port/limits) without stopping.
 func (s *Server) Run(tlsCfg *tls.Config) error {
 	addr := fmt.Sprintf("%s:%d", s.cfg.Server.Host, s.cfg.Server.Port)
-	ln, err := tls.Listen("tcp", addr, tlsCfg)
+	var (
+		ln      net.Listener
+		err     error
+		proto   string
+	)
+	if tlsCfg != nil {
+		ln, err = tls.Listen("tcp", addr, tlsCfg)
+		proto = "TLS"
+	} else {
+		ln, err = net.Listen("tcp", addr)
+		proto = "plain TCP (no TLS)"
+	}
 	if err != nil {
 		return fmt.Errorf("listen %s: %w", addr, err)
 	}
@@ -69,7 +80,7 @@ func (s *Server) Run(tlsCfg *tls.Config) error {
 
 	go s.hub.Run()
 	s.logger.Log("SERVER_START", "", fmt.Sprintf("addr=%s", addr))
-	log.Printf("server listening on %s (TLS)", addr)
+	log.Printf("server listening on %s (%s)", addr, proto)
 
 	// Accept loop runs in background; signals handled in main goroutine below.
 	go s.acceptLoop(ln)

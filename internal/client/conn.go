@@ -35,10 +35,18 @@ type outMsg struct {
 	payload any
 }
 
-// Connect dials the server over TLS.
+// Connect dials the server. If tlsCfg is nil, plain TCP is used (debug only).
 // Goroutines are NOT started yet — call Auth first, then they start automatically.
 func Connect(addr string, tlsCfg *tls.Config) (*Conn, error) {
-	raw, err := tls.Dial("tcp", addr, tlsCfg)
+	var (
+		raw net.Conn
+		err error
+	)
+	if tlsCfg != nil {
+		raw, err = tls.Dial("tcp", addr, tlsCfg)
+	} else {
+		raw, err = net.Dial("tcp", addr)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("dial %s: %w", addr, err)
 	}

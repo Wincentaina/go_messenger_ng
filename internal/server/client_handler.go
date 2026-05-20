@@ -258,6 +258,20 @@ func (s *Server) handleCreateGroup(client *clientConn, raw []byte) {
 	}
 	members := append(req.Members, client.username)
 	if err := s.db.CreateGroup(req.Name, client.username, members); err != nil {
+		if strings.Contains(err.Error(), "уже существует") {
+			// Group already exists — re-add the requesting user (rejoin after leave)
+			if addErr := s.db.AddGroupMember(req.Name, client.username); addErr != nil {
+				s.sendError(client, fmt.Sprintf("группа #%s уже существует; попросите участника добавить вас (Ctrl+A)", req.Name))
+				return
+			}
+			s.logger.Log("GROUP_JOIN", client.username, fmt.Sprintf("group=%s rejoined", req.Name))
+			allMembers, _ := s.db.GetGroupMembers(req.Name)
+			s.broadcastSystemMsg(req.Name,
+				fmt.Sprintf("%s вернулся в группу", client.username),
+				allMembers)
+			s.notifyGroupMembers(req.Name, allMembers)
+			return
+		}
 		s.sendError(client, fmt.Sprintf("create group: %v", err))
 		return
 	}
@@ -424,23 +438,9 @@ func (s *Server) handleAddToGroup(client *clientConn, raw []byte) {
 	s.notifyGroupMembers(req.Group, members)
 
 	// Broadcast a system message to all group members announcing the addition
-	sysMsg := protocol.GroupMsg{
-		Group:   req.Group,
-		Content: fmt.Sprintf("%s приглашён пользователем %s", req.User, client.username),
-		SentAt:  time.Now().UTC().Format(time.RFC3339),
-		// FromUser intentionally empty — signals a system/event message
-	}
-	sysMsgRaw, _ := json.Marshal(sysMsg)
-	s.hub.mu.RLock()
-	for _, member := range members {
-		if c, ok := s.hub.clients[member]; ok {
-			select {
-			case c.send <- envelope{t: protocol.TypeGroupMsg, payload: sysMsgRaw}:
-			default:
-			}
-		}
-	}
-	s.hub.mu.RUnlock()
+	s.broadcastSystemMsg(req.Group,
+		fmt.Sprintf("%s приглашён пользователем %s", req.User, client.username),
+		members)
 }
 
 func (s *Server) handleLeaveGroup(client *clientConn, raw []byte) {
@@ -462,23 +462,10 @@ func (s *Server) handleLeaveGroup(client *clientConn, raw []byte) {
 	remaining, _ := s.db.GetGroupMembers(req.Group)
 	s.notifyGroupMembers(req.Group, remaining)
 
-	// Broadcast system message to remaining members
-	sysMsg := protocol.GroupMsg{
-		Group:   req.Group,
-		Content: fmt.Sprintf("%s покинул группу", client.username),
-		SentAt:  time.Now().UTC().Format(time.RFC3339),
-	}
-	sysMsgRaw, _ := json.Marshal(sysMsg)
-	s.hub.mu.RLock()
-	for _, member := range remaining {
-		if c, ok := s.hub.clients[member]; ok {
-			select {
-			case c.send <- envelope{t: protocol.TypeGroupMsg, payload: sysMsgRaw}:
-			default:
-			}
-		}
-	}
-	s.hub.mu.RUnlock()
+	// Broadcast system message to remaining members + the leaving user themselves
+	s.broadcastSystemMsg(req.Group,
+		fmt.Sprintf("%s покинул группу", client.username),
+		append(remaining, client.username))
 
 	// Send updated UserListResp to the leaving user (group is gone from their list)
 	groups, _ := s.db.GetUserGroups(client.username)
@@ -489,6 +476,29 @@ func (s *Server) handleLeaveGroup(client *clientConn, raw []byte) {
 	case client.send <- envelope{t: protocol.TypeUserListResp, payload: respRaw}:
 	default:
 	}
+}
+
+// broadcastSystemMsg saves a system message to DB and sends it to all online members.
+func (s *Server) broadcastSystemMsg(group, text string, recipients []string) {
+	msg := protocol.GroupMsg{
+		Group:   group,
+		Content: text,
+		SentAt:  time.Now().UTC().Format(time.RFC3339),
+	}
+	if _, err := s.db.SaveGroupMessage(msg); err != nil {
+		log.Printf("save system msg: %v", err)
+	}
+	raw, _ := json.Marshal(msg)
+	s.hub.mu.RLock()
+	for _, member := range recipients {
+		if c, ok := s.hub.clients[member]; ok {
+			select {
+			case c.send <- envelope{t: protocol.TypeGroupMsg, payload: raw}:
+			default:
+			}
+		}
+	}
+	s.hub.mu.RUnlock()
 }
 
 func (s *Server) handleDeleteAccount(client *clientConn) {

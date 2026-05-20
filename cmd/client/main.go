@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"crypto/tls"
 	"flag"
 	"fmt"
 	"log"
@@ -19,6 +20,7 @@ func main() {
 	flagUser  := flag.String("user",     "", "username (skips interactive prompt)")
 	flagPass  := flag.String("pass",     "", "password (skips interactive prompt)")
 	flagReg   := flag.Bool("register",   false, "register a new account")
+	flagNoTLS := flag.Bool("no-tls",     false, "disable TLS (plain TCP, for debugging only)")
 	flag.Parse()
 
 	// Redirect all log output to a file so it doesn't corrupt the tview TUI.
@@ -38,9 +40,12 @@ func main() {
 		log.Fatalf("config: %v", err)
 	}
 
-	tlsCfg, err := crypto.ClientTLS(cfg.TLS.CACert, cfg.TLS.SkipVerify)
-	if err != nil {
-		log.Fatalf("TLS: %v", err)
+	var tlsCfg *tls.Config
+	if !*flagNoTLS {
+		tlsCfg, err = crypto.ClientTLS(cfg.TLS.CACert, cfg.TLS.SkipVerify)
+		if err != nil {
+			log.Fatalf("TLS: %v", err)
+		}
 	}
 
 	// Single stdin reader shared across retries — avoids losing buffered data

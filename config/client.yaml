@@ -1,5 +1,5 @@
 server:
-  address: "localhost:8443"
+  address: "127.0.0.1:8443"
 
 tls:
   # path to server's self-signed cert for verification

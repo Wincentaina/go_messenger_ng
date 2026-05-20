@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/tls"
 	"flag"
 	"log"
 	"os"
@@ -12,7 +13,8 @@ import (
 )
 
 func main() {
-	cfgPath := flag.String("config", "config/server.yaml", "path to server config")
+	cfgPath  := flag.String("config",   "config/server.yaml", "path to server config")
+	flagNoTLS := flag.Bool("no-tls", false, "disable TLS (plain TCP, for debugging only)")
 	flag.Parse()
 
 	cfg, err := config.Load(*cfgPath)
@@ -39,9 +41,14 @@ func main() {
 	defer logger.Close()
 	logger.SetStore(database)
 
-	tlsCfg, err := crypto.ServerTLS(cfg.TLS.CertFile, cfg.TLS.KeyFile)
-	if err != nil {
-		log.Fatalf("TLS: %v", err)
+	var tlsCfg *tls.Config
+	if !*flagNoTLS {
+		tlsCfg, err = crypto.ServerTLS(cfg.TLS.CertFile, cfg.TLS.KeyFile)
+		if err != nil {
+			log.Fatalf("TLS: %v", err)
+		}
+	} else {
+		log.Println("WARNING: TLS disabled — plain TCP, do not use in production")
 	}
 
 	srv := server.New(cfg, database, logger)

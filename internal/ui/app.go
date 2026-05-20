@@ -66,6 +66,10 @@ type App struct {
 	// lastTypingSent throttles outgoing TypeTyping notifications (max 1 per 2s).
 	lastTypingSent time.Time
 
+	// pendingUnread holds chats that received a message before the user list
+	// was populated — applied in rebuildUserList when the items exist.
+	pendingUnread map[string]bool
+
 	// root layout — needed to attach modal dialogs
 	root *tview.Flex
 }
@@ -73,12 +77,13 @@ type App struct {
 // New creates the App but doesn't run it yet.
 func New(conn *client.Conn, me string, cache *client.MessageCache) *App {
 	a := &App{
-		tapp:      tview.NewApplication(),
-		conn:      conn,
-		me:        me,
-		cache:     cache,
-		replyMap:  make(map[int64]protocol.RecvMsg),
-		onlineSet: make(map[string]bool),
+		tapp:          tview.NewApplication(),
+		conn:          conn,
+		me:            me,
+		cache:         cache,
+		replyMap:      make(map[int64]protocol.RecvMsg),
+		onlineSet:     make(map[string]bool),
+		pendingUnread: make(map[string]bool),
 	}
 	a.buildLayout()
 	return a
@@ -257,6 +262,9 @@ func (a *App) openChat(target string) {
 	a.conn.Send(protocol.TypeHistoryReq, req)
 
 	a.tapp.SetFocus(a.inputField)
+	// Force full screen redraw — needed on Windows where tview may not
+	// repaint all panels after switching chats.
+	a.tapp.Sync()
 }
 
 // sendCurrentInput reads the input field and sends the message.
@@ -743,15 +751,30 @@ func (a *App) rebuildUserList(users []string, online []string, groups []string) 
 		}
 		a.userList.AddItem(fmt.Sprintf("%s[yellow]#%s[-]", dot, g), "", 0, nil)
 	}
+
+	// Apply unread markers that arrived before the list was populated
+	for target := range a.pendingUnread {
+		a.markUnread(target)
+	}
+	a.pendingUnread = make(map[string]bool)
 }
 
 // markUnread adds a "●" indicator to show there's a new unread message.
+// If the target is not yet in the list (UserListResp hasn't arrived),
+// it is stored in pendingUnread and applied in rebuildUserList.
 func (a *App) markUnread(target string) {
+	found := false
 	for i := 0; i < a.userList.GetItemCount(); i++ {
 		main, _ := a.userList.GetItemText(i)
-		if stripLabel(main) == target && !strings.HasPrefix(main, "● ") {
-			a.userList.SetItemText(i, "● "+main, "")
+		if stripLabel(main) == target {
+			found = true
+			if !strings.HasPrefix(main, "● ") {
+				a.userList.SetItemText(i, "● "+main, "")
+			}
 		}
+	}
+	if !found {
+		a.pendingUnread[target] = true
 	}
 }
 
