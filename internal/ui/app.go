@@ -78,7 +78,7 @@ func (a *App) Run() error {
 func (a *App) buildLayout() {
 	a.titleBar = tview.NewTextView().
 		SetDynamicColors(true).
-		SetText(fmt.Sprintf("[yellow]go-messenger[-]  вы: [green]%s[-]  |  Tab — панель  |  Ctrl+N — группа  |  Ctrl+C — выход", a.me))
+		SetText(fmt.Sprintf("[yellow]go-messenger[-]  вы: [green]%s[-]  |  Tab — панель  |  Ctrl+N — группа  |  Ctrl+R — ответить  |  Ctrl+C — выход", a.me))
 
 	// Left panel: list of users/groups.
 	// SetChangedFunc fires on arrow-key navigation — only updates the title.
@@ -136,12 +136,8 @@ func (a *App) buildLayout() {
 			a.clearReply()
 			return nil
 		}
-		return event
-	})
-
-	// 'r' in chatView starts a reply to the last visible message.
-	a.chatView.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
-		if event.Rune() == 'r' {
+		// Ctrl+R starts a reply to the last message
+		if event.Key() == tcell.KeyCtrlR {
 			a.startReplyToLast()
 			return nil
 		}
@@ -396,11 +392,34 @@ func (a *App) formatMessage(m protocol.RecvMsg) string {
 		nameColor = "[green]"
 	}
 	if m.ReplyToID > 0 {
-		return fmt.Sprintf("[grey]%s[-] %s%s[-] [grey]↩#%d[-]: %s\n",
-			ts, nameColor, m.FromUser, m.ReplyToID, m.Content)
+		quote := ""
+		if orig := a.findMessageByID(m.ReplyToID); orig != nil {
+			preview := orig.Content
+			if len([]rune(preview)) > 40 {
+				preview = string([]rune(preview)[:40]) + "…"
+			}
+			quote = fmt.Sprintf("[grey]  ┌ %s: %s[-]\n", orig.FromUser, preview)
+		}
+		return fmt.Sprintf("%s[grey]%s[-] %s%s[-]: %s\n", quote, ts, nameColor, m.FromUser, m.Content)
 	}
 	return fmt.Sprintf("[grey]%s[-] %s%s[-]: %s\n",
 		ts, nameColor, m.FromUser, m.Content)
+}
+
+// findMessageByID looks up a message by ID in the current chat's cache.
+func (a *App) findMessageByID(id int64) *protocol.RecvMsg {
+	var msgs []protocol.RecvMsg
+	if a.isGroup {
+		msgs = a.cache.GetGroup(strings.TrimPrefix(a.currentChat, "#"))
+	} else {
+		msgs = a.cache.Get(a.me, a.currentChat)
+	}
+	for i := range msgs {
+		if msgs[i].ID == id {
+			return &msgs[i]
+		}
+	}
+	return nil
 }
 
 // showNewGroupDialog opens a modal input for creating a new group.
