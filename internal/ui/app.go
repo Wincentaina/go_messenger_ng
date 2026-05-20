@@ -505,20 +505,30 @@ func (a *App) findMessageByID(id int64) *protocol.RecvMsg {
 	return nil
 }
 
-// leaveCurrentGroup sends a LeaveGroup request for the currently open group chat.
+// leaveCurrentGroup shows a confirmation modal before leaving the current group.
 func (a *App) leaveCurrentGroup() {
 	if !a.isGroup {
 		a.setStatus("[red]Ctrl+L работает только в группах[-]")
 		return
 	}
 	groupName := strings.TrimPrefix(a.currentChat, "#")
-	a.conn.Send(protocol.TypeLeaveGroup, protocol.LeaveGroup{Group: groupName})
-	// Server will respond with updated UserListResp; the group vanishes from sidebar.
-	a.currentChat = ""
-	a.isGroup = false
-	a.chatView.SetTitle(" Чат ")
-	a.chatView.SetText("")
-	a.setStatus(fmt.Sprintf("[yellow]Вы покинули группу #%s[-]", groupName))
+	modal := tview.NewModal().
+		SetText(fmt.Sprintf("Покинуть группу [yellow]#%s[-]?", groupName)).
+		AddButtons([]string{"Покинуть", "Отмена"}).
+		SetDoneFunc(func(_ int, label string) {
+			if label == "Покинуть" {
+				a.conn.Send(protocol.TypeLeaveGroup, protocol.LeaveGroup{Group: groupName})
+				a.currentChat = ""
+				a.isGroup = false
+				a.chatView.SetTitle(" Чат ")
+				a.chatView.SetText("")
+				a.tapp.SetRoot(a.root, true).SetFocus(a.userList)
+				a.setStatus(fmt.Sprintf("[yellow]Вы покинули группу #%s[-]", groupName))
+			} else {
+				a.tapp.SetRoot(a.root, true).SetFocus(a.inputField)
+			}
+		})
+	a.tapp.SetRoot(modal, true).SetFocus(modal)
 }
 
 // showDeleteAccountDialog shows a confirmation modal before soft-deleting the account.
