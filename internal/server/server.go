@@ -27,6 +27,7 @@ type DB interface {
 	GetGroupMembers(name string) ([]string, error)
 	SaveGroupMessage(msg protocol.GroupMsg) error
 	GetGroupHistory(group string, limit int) ([]protocol.RecvMsg, error)
+	GetUserGroups(username string) ([]string, error)
 }
 
 // Logger is the interface the server uses to record events.
@@ -111,11 +112,10 @@ func (s *Server) handleSignals(ln net.Listener) error {
 // Pass newClient when a user just connected — they may not be in hub.clients yet
 // due to the async registration channel, so we send to them directly and include
 // them in the online set manually.
-// broadcastUserList sends the updated user+online list to all connected clients.
-// Users are fetched from the in-memory BST (O(n) sorted traversal, no DB round-trip).
+// broadcastUserList sends a personalised UserListResp to every connected client.
+// Each client gets their own group list (groups differ per user).
 // Pass newClient when a freshly authenticated user may not be in hub.clients yet.
 func (s *Server) broadcastUserList(newClient ...*clientConn) {
-	// BST inorder gives alphabetically sorted usernames without extra sort pass
 	users := s.hub.AllUsersSorted()
 
 	s.hub.mu.RLock()
@@ -128,14 +128,15 @@ func (s *Server) broadcastUserList(newClient ...*clientConn) {
 		extra = newClient[0]
 		onlineSet[extra.username] = true
 	}
-
 	online := make([]string, 0, len(onlineSet))
 	for name := range onlineSet {
 		online = append(online, name)
 	}
-	raw, _ := json.Marshal(protocol.UserListResp{Users: users, Online: online})
 
+	// Send personalised response to each client (different groups per user)
 	for _, c := range s.hub.clients {
+		groups, _ := s.db.GetUserGroups(c.username)
+		raw, _ := json.Marshal(protocol.UserListResp{Users: users, Online: online, Groups: groups})
 		select {
 		case c.send <- envelope{t: protocol.TypeUserListResp, payload: raw}:
 		default:
@@ -144,6 +145,8 @@ func (s *Server) broadcastUserList(newClient ...*clientConn) {
 	s.hub.mu.RUnlock()
 
 	if extra != nil {
+		groups, _ := s.db.GetUserGroups(extra.username)
+		raw, _ := json.Marshal(protocol.UserListResp{Users: users, Online: online, Groups: groups})
 		select {
 		case extra.send <- envelope{t: protocol.TypeUserListResp, payload: raw}:
 		default:

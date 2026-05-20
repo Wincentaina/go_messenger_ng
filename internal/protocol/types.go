@@ -93,10 +93,11 @@ type HistoryResp struct {
 // UserListReq asks the server for a list of known users.
 type UserListReq struct{}
 
-// UserListResp carries all registered users plus a subset of who is online right now.
+// UserListResp carries all registered users, who is online, and the caller's groups.
 type UserListResp struct {
 	Users  []string `json:"users"`         // all registered
 	Online []string `json:"online"`        // currently connected
+	Groups []string `json:"groups"`        // groups the requesting user belongs to
 }
 
 // CreateGroup creates a new group chat.

@@ -186,7 +186,13 @@ func (s *Server) handleHistoryReq(client *clientConn, raw []byte) {
 		req.Limit = 50
 	}
 
-	msgs, err := s.db.GetHistory(client.username, req.WithUser, req.Limit)
+	var msgs []protocol.RecvMsg
+	var err error
+	if req.WithGroup != "" {
+		msgs, err = s.db.GetGroupHistory(req.WithGroup, req.Limit)
+	} else {
+		msgs, err = s.db.GetHistory(client.username, req.WithUser, req.Limit)
+	}
 	if err != nil {
 		log.Printf("get history: %v", err)
 		msgs = nil
@@ -204,7 +210,8 @@ func (s *Server) handleUserListReq(client *clientConn) {
 	// BST.InOrder() gives sorted list in O(n) without hitting the DB
 	users := s.hub.AllUsersSorted()
 	online := s.hub.OnlineUsers()
-	resp := protocol.UserListResp{Users: users, Online: online}
+	groups, _ := s.db.GetUserGroups(client.username)
+	resp := protocol.UserListResp{Users: users, Online: online, Groups: groups}
 	respRaw, _ := json.Marshal(resp)
 	select {
 	case client.send <- envelope{t: protocol.TypeUserListResp, payload: respRaw}:
@@ -224,6 +231,9 @@ func (s *Server) handleCreateGroup(client *clientConn, raw []byte) {
 		return
 	}
 	log.Printf("group %q created by %s", req.Name, client.username)
+
+	// Notify all group members so their sidebar updates immediately
+	s.notifyGroupMembers(req.Name, members)
 }
 
 func (s *Server) handleGroupMsg(client *clientConn, raw []byte) {
@@ -247,16 +257,49 @@ func (s *Server) handleGroupMsg(client *clientConn, raw []byte) {
 	}
 
 	outRaw, _ := json.Marshal(msg)
+
+	// Echo back to sender so their chat view updates immediately
+	select {
+	case client.send <- envelope{t: protocol.TypeGroupMsg, payload: outRaw}:
+	default:
+	}
+
 	s.hub.mu.RLock()
 	for _, member := range members {
 		if member == client.username {
-			continue
+			continue // already sent above
 		}
 		if c, ok := s.hub.clients[member]; ok {
 			select {
 			case c.send <- envelope{t: protocol.TypeGroupMsg, payload: outRaw}:
 			default:
 			}
+		}
+	}
+	s.hub.mu.RUnlock()
+}
+
+// notifyGroupMembers sends a fresh UserListResp to each online group member
+// so their sidebar picks up the new group without manual refresh.
+func (s *Server) notifyGroupMembers(groupName string, members []string) {
+	users := s.hub.AllUsersSorted()
+	online := s.hub.OnlineUsers()
+
+	s.hub.mu.RLock()
+	for _, member := range members {
+		c, ok := s.hub.clients[member]
+		if !ok {
+			continue
+		}
+		groups, _ := s.db.GetUserGroups(member)
+		raw, _ := json.Marshal(protocol.UserListResp{
+			Users:  users,
+			Online: online,
+			Groups: groups,
+		})
+		select {
+		case c.send <- envelope{t: protocol.TypeUserListResp, payload: raw}:
+		default:
 		}
 	}
 	s.hub.mu.RUnlock()

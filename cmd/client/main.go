@@ -28,21 +28,27 @@ func main() {
 		log.Fatalf("TLS: %v", err)
 	}
 
-	// Auth retry loop: reconnects on each failed attempt (server closes conn on failure).
+	// Single stdin reader shared across retries — avoids losing buffered data
+	// when a new bufio.Reader is created on each iteration.
+	stdinReader := bufio.NewReader(os.Stdin)
+
+	// Credentials are collected BEFORE connecting: cleaner UX and avoids
+	// a timing window where the server waits while the user is typing.
 	var (
 		conn     *client.Conn
 		username string
 	)
 	for {
+		// Use = not := so outer username is assigned (not shadowed by a new local var)
+		var password string
+		var register bool
+		username, password, register = promptCredentials(stdinReader)
+
 		var err error
 		conn, err = client.Connect(cfg.Server.Address, tlsCfg)
 		if err != nil {
 			log.Fatalf("подключение не удалось: %v", err)
 		}
-
-		var password string
-		var register bool
-		username, password, register = promptCredentials()
 
 		resp, err := conn.Auth(username, password, register)
 		if err != nil {
@@ -70,9 +76,7 @@ func main() {
 	}
 }
 
-func promptCredentials() (username, password string, register bool) {
-	r := bufio.NewReader(os.Stdin)
-
+func promptCredentials(r *bufio.Reader) (username, password string, register bool) {
 	fmt.Print("Имя пользователя: ")
 	username, _ = r.ReadString('\n')
 	username = strings.TrimSpace(username)

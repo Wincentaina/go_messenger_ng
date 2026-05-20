@@ -61,7 +61,7 @@ func (p *Postgres) CheckPassword(username, password string) (int, bool, error) {
 		`SELECT id, password_hash FROM users WHERE username=$1`, username,
 	).Scan(&id, &hash)
 	if err == sql.ErrNoRows {
-		return 0, false, fmt.Errorf("пользователь не найден")
+		return 0, false, nil // treat as wrong password — don't leak username existence
 	}
 	if err != nil {
 		return 0, false, fmt.Errorf("lookup user: %w", err)
@@ -206,6 +206,32 @@ func (p *Postgres) GetGroupMembers(name string) ([]string, error) {
 		members = append(members, m)
 	}
 	return members, rows.Err()
+}
+
+// GetUserGroups returns names of all groups the user belongs to.
+func (p *Postgres) GetUserGroups(username string) ([]string, error) {
+	rows, err := p.conn.Query(`
+		SELECT g.name
+		FROM groups g
+		JOIN group_members gm ON gm.group_id = g.id
+		JOIN users u ON u.id = gm.user_id
+		WHERE u.username = $1
+		ORDER BY g.name`, username,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var groups []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		groups = append(groups, name)
+	}
+	return groups, rows.Err()
 }
 
 // SaveGroupMessage persists a message sent to a group.
