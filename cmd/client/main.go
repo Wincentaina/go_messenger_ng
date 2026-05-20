@@ -15,7 +15,10 @@ import (
 )
 
 func main() {
-	cfgPath := flag.String("config", "config/client.yaml", "path to client config")
+	cfgPath   := flag.String("config",   "config/client.yaml", "path to client config")
+	flagUser  := flag.String("user",     "", "username (skips interactive prompt)")
+	flagPass  := flag.String("pass",     "", "password (skips interactive prompt)")
+	flagReg   := flag.Bool("register",   false, "register a new account")
 	flag.Parse()
 
 	// Redirect all log output to a file so it doesn't corrupt the tview TUI.
@@ -50,33 +53,59 @@ func main() {
 		conn     *client.Conn
 		username string
 	)
-	for {
-		// Use = not := so outer username is assigned (not shadowed by a new local var)
-		var password string
-		var register bool
-		username, password, register = promptCredentials(stdinReader)
+
+	if *flagUser != "" && *flagPass != "" {
+		// Non-interactive mode: credentials supplied via flags.
+		username = sanitizeASCII(*flagUser)
+		password := sanitizeASCII(*flagPass)
 
 		var err error
 		conn, err = client.Connect(cfg.Server.Address, tlsCfg)
 		if err != nil {
 			log.Fatalf("подключение не удалось: %v", err)
 		}
-
-		resp, err := conn.Auth(username, password, register)
+		resp, err := conn.Auth(username, password, *flagReg)
 		if err != nil {
 			conn.Close()
 			log.Fatalf("ошибка соединения: %v", err)
 		}
-		if resp.OK {
-			break
+		if !resp.OK {
+			conn.Close()
+			msg := resp.Message
+			if msg == "" {
+				msg = "неверные данные"
+			}
+			log.Fatalf("авторизация не удалась: %s", msg)
 		}
+	} else {
+		// Interactive mode: prompt for credentials, retry on failure.
+		for {
+			var password string
+			var register bool
+			username, password, register = promptCredentials(stdinReader)
 
-		conn.Close()
-		msg := resp.Message
-		if msg == "" {
-			msg = "неверные данные"
+			var err error
+			conn, err = client.Connect(cfg.Server.Address, tlsCfg)
+			if err != nil {
+				log.Fatalf("подключение не удалось: %v", err)
+			}
+
+			resp, err := conn.Auth(username, password, register)
+			if err != nil {
+				conn.Close()
+				log.Fatalf("ошибка соединения: %v", err)
+			}
+			if resp.OK {
+				break
+			}
+
+			conn.Close()
+			msg := resp.Message
+			if msg == "" {
+				msg = "неверные данные"
+			}
+			fmt.Fprintf(os.Stderr, "Ошибка: %s. Попробуйте снова.\n\n", msg)
 		}
-		fmt.Fprintf(os.Stderr, "Ошибка: %s. Попробуйте снова.\n\n", msg)
 	}
 	defer conn.Close()
 
