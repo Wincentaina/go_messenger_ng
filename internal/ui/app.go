@@ -47,6 +47,9 @@ type App struct {
 	// pendingHistoryFor tracks which chat the last HistoryReq was for,
 	// so we don't overwrite the current view with a stale response.
 	pendingHistoryFor string
+
+	// root layout — needed to attach modal dialogs
+	root *tview.Flex
 }
 
 // New creates the App but doesn't run it yet.
@@ -72,7 +75,7 @@ func (a *App) Run() error {
 func (a *App) buildLayout() {
 	a.titleBar = tview.NewTextView().
 		SetDynamicColors(true).
-		SetText(fmt.Sprintf("[yellow]go-messenger[-]  вы: [green]%s[-]  |  Tab — сменить панель  |  Ctrl+C — выход", a.me))
+		SetText(fmt.Sprintf("[yellow]go-messenger[-]  вы: [green]%s[-]  |  Tab — панель  |  Ctrl+N — группа  |  Ctrl+C — выход", a.me))
 
 	// Left panel: list of users/groups.
 	// SetChangedFunc fires on arrow-key navigation — only updates the title.
@@ -133,12 +136,21 @@ func (a *App) buildLayout() {
 		AddItem(a.userList, 22, 0, true).
 		AddItem(a.chatView, 0, 1, false)
 
-	root := tview.NewFlex().SetDirection(tview.FlexRow).
+	a.root = tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(a.titleBar, 1, 0, false).
 		AddItem(mainFlex, 0, 1, true).
 		AddItem(a.inputField, 3, 0, false)
 
-	a.tapp.SetRoot(root, true).SetFocus(a.userList)
+	a.tapp.SetRoot(a.root, true).SetFocus(a.userList)
+
+	// Ctrl+N — create new group
+	a.tapp.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		if event.Key() == tcell.KeyCtrlN {
+			a.showNewGroupDialog()
+			return nil
+		}
+		return event
+	})
 }
 
 // openChat switches to a conversation. Called only on Enter (SetSelectedFunc).
@@ -292,7 +304,7 @@ func (a *App) handleIncoming(msg client.Incoming) {
 			return
 		}
 		a.tapp.QueueUpdateDraw(func() {
-			a.rebuildUserList(resp.Users, resp.Online)
+			a.rebuildUserList(resp.Users, resp.Online, resp.Groups)
 		})
 
 	case protocol.TypeServerShutdown:
@@ -345,36 +357,77 @@ func (a *App) formatMessage(m protocol.RecvMsg) string {
 		ts, nameColor, m.FromUser, m.Content)
 }
 
+// showNewGroupDialog opens a modal input for creating a new group.
+func (a *App) showNewGroupDialog() {
+	var form *tview.Form
+	form = tview.NewForm().
+		AddInputField("Название", "", 20, nil, nil).
+		AddInputField("Участники (через ,)", "", 20, nil, nil).
+		AddButton("Создать", func() {
+			name := form.GetFormItemByLabel("Название").(*tview.InputField).GetText()
+			membersRaw := form.GetFormItemByLabel("Участники (через ,)").(*tview.InputField).GetText()
+
+			var members []string
+			for _, m := range strings.Split(membersRaw, ",") {
+				m = strings.TrimSpace(m)
+				if m != "" && m != a.me {
+					members = append(members, m)
+				}
+			}
+
+			if name != "" {
+				a.conn.Send(protocol.TypeCreateGroup, protocol.CreateGroup{
+					Name:    name,
+					Members: members,
+				})
+			}
+			a.tapp.SetRoot(a.root, true).SetFocus(a.inputField)
+		}).
+		AddButton("Отмена", func() {
+			a.tapp.SetRoot(a.root, true).SetFocus(a.userList)
+		})
+	form.SetBorder(true).SetTitle(" Новая группа ")
+
+	// Center the modal — width 44 fits two 20-char fields + labels + padding
+	modal := tview.NewFlex().
+		AddItem(nil, 0, 1, false).
+		AddItem(tview.NewFlex().SetDirection(tview.FlexRow).
+			AddItem(nil, 0, 1, false).
+			AddItem(form, 11, 0, true).
+			AddItem(nil, 0, 1, false), 44, 0, true).
+		AddItem(nil, 0, 1, false)
+
+	a.tapp.SetRoot(modal, true).SetFocus(form)
+}
+
 // rebuildUserList repopulates the left panel, preserving unread markers.
 // Online users are shown in green; offline users in the default colour.
-func (a *App) rebuildUserList(users []string, online []string) {
-	// Index who is online and who has unread messages
+func (a *App) rebuildUserList(users []string, online []string, groups []string) {
 	onlineSet := make(map[string]bool, len(online))
 	for _, u := range online {
 		onlineSet[u] = true
 	}
 
+	// Preserve unread markers across rebuild
 	unread := make(map[string]bool)
 	for i := 0; i < a.userList.GetItemCount(); i++ {
 		main, _ := a.userList.GetItemText(i)
-		plain := stripLabel(main)
 		if strings.HasPrefix(main, "● ") {
-			unread[plain] = true
+			unread[stripLabel(main)] = true
 		}
 	}
 
 	a.userList.Clear()
+
+	// Direct message contacts (skip self)
 	for _, u := range users {
-		if u == a.me {
+		if u == a.me || u == "" {
 			continue
 		}
-
-		// Build label: unread dot + colour based on online status
 		dot := ""
 		if unread[u] {
 			dot = "● "
 		}
-
 		var label string
 		if onlineSet[u] {
 			label = fmt.Sprintf("%s[green]%s[-]", dot, u)
@@ -382,6 +435,16 @@ func (a *App) rebuildUserList(users []string, online []string) {
 			label = fmt.Sprintf("%s[white]%s[-]", dot, u)
 		}
 		a.userList.AddItem(label, "", 0, nil)
+	}
+
+	// Group chats (shown with # prefix in grey)
+	for _, g := range groups {
+		key := "#" + g
+		dot := ""
+		if unread[key] {
+			dot = "● "
+		}
+		a.userList.AddItem(fmt.Sprintf("%s[yellow]#%s[-]", dot, g), "", 0, nil)
 	}
 }
 
