@@ -136,9 +136,9 @@ func (a *App) buildLayout() {
 			a.clearReply()
 			return nil
 		}
-		// Ctrl+R starts a reply to the last message
+		// Ctrl+R opens message picker for reply
 		if event.Key() == tcell.KeyCtrlR {
-			a.startReplyToLast()
+			a.showReplyPicker()
 			return nil
 		}
 		return event
@@ -231,8 +231,8 @@ func (a *App) sendCurrentInput() {
 	}
 }
 
-// startReplyToLast picks the last message in the current chat for replying.
-func (a *App) startReplyToLast() {
+// showReplyPicker shows a modal list of recent messages to pick one for reply.
+func (a *App) showReplyPicker() {
 	var msgs []protocol.RecvMsg
 	if a.isGroup {
 		msgs = a.cache.GetGroup(strings.TrimPrefix(a.currentChat, "#"))
@@ -242,13 +242,59 @@ func (a *App) startReplyToLast() {
 	if len(msgs) == 0 {
 		return
 	}
-	a.replyTo = msgs[len(msgs)-1]
-	preview := a.replyTo.Content
+
+	// Show up to 10 most recent messages, newest at bottom → reverse for display
+	start := 0
+	if len(msgs) > 10 {
+		start = len(msgs) - 10
+	}
+	recent := msgs[start:]
+
+	list := tview.NewList().ShowSecondaryText(false).SetHighlightFullLine(true).
+		SetSelectedBackgroundColor(tcell.ColorDarkBlue)
+	list.SetBorder(true).SetTitle(" Выберите сообщение для ответа (Enter / Esc) ")
+
+	for _, m := range recent {
+		label := m.FromUser + ": " + m.Content
+		if len([]rune(label)) > 60 {
+			label = string([]rune(label)[:60]) + "…"
+		}
+		captured := m
+		list.AddItem(label, "", 0, func() {
+			a.setReplyTo(captured)
+			a.tapp.SetRoot(a.root, true).SetFocus(a.inputField)
+		})
+	}
+	// Start with last item selected (most recent)
+	list.SetCurrentItem(list.GetItemCount() - 1)
+
+	list.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		if event.Key() == tcell.KeyEsc {
+			a.tapp.SetRoot(a.root, true).SetFocus(a.inputField)
+			return nil
+		}
+		return event
+	})
+
+	modal := tview.NewFlex().
+		AddItem(nil, 0, 1, false).
+		AddItem(tview.NewFlex().SetDirection(tview.FlexRow).
+			AddItem(nil, 0, 1, false).
+			AddItem(list, 14, 0, true).
+			AddItem(nil, 0, 1, false), 0, 2, true).
+		AddItem(nil, 0, 1, false)
+
+	a.tapp.SetRoot(modal, true).SetFocus(list)
+}
+
+// setReplyTo stores the chosen message and updates the input label.
+func (a *App) setReplyTo(m protocol.RecvMsg) {
+	a.replyTo = m
+	preview := m.Content
 	if len([]rune(preview)) > 30 {
 		preview = string([]rune(preview)[:30]) + "…"
 	}
-	a.inputField.SetLabel(fmt.Sprintf(" ↩ %s: %s > ", a.replyTo.FromUser, preview))
-	a.tapp.SetFocus(a.inputField)
+	a.inputField.SetLabel(fmt.Sprintf(" ↩ %s: %s > ", m.FromUser, preview))
 }
 
 // clearReply resets the reply state and restores the normal input label.
