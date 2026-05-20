@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	_ "github.com/lib/pq" // postgres driver
+	"github.com/lib/pq"
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/wincentaina/go_messenger_ng/internal/protocol"
@@ -48,6 +48,9 @@ func (p *Postgres) CreateUser(username, password string) (int, error) {
 		username, string(hash),
 	).Scan(&id)
 	if err != nil {
+		if pgErr, ok := err.(*pq.Error); ok && pgErr.Code == "23505" {
+			return 0, fmt.Errorf("имя пользователя уже занято")
+		}
 		return 0, fmt.Errorf("create user: %w", err)
 	}
 	return id, nil
