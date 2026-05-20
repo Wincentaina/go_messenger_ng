@@ -345,6 +345,25 @@ func (s *Server) handleAddToGroup(client *clientConn, raw []byte) {
 	// Notify all current members (including the new one) so their sidebars update
 	members, _ := s.db.GetGroupMembers(req.Group)
 	s.notifyGroupMembers(req.Group, members)
+
+	// Broadcast a system message to all group members announcing the addition
+	sysMsg := protocol.GroupMsg{
+		Group:   req.Group,
+		Content: fmt.Sprintf("%s приглашён пользователем %s", req.User, client.username),
+		SentAt:  time.Now().UTC().Format(time.RFC3339),
+		// FromUser intentionally empty — signals a system/event message
+	}
+	sysMsgRaw, _ := json.Marshal(sysMsg)
+	s.hub.mu.RLock()
+	for _, member := range members {
+		if c, ok := s.hub.clients[member]; ok {
+			select {
+			case c.send <- envelope{t: protocol.TypeGroupMsg, payload: sysMsgRaw}:
+			default:
+			}
+		}
+	}
+	s.hub.mu.RUnlock()
 }
 
 func (s *Server) handleLeaveGroup(client *clientConn, raw []byte) {

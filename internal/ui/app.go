@@ -464,6 +464,11 @@ func (a *App) appendMessage(m protocol.RecvMsg) {
 
 // formatMessage returns a coloured string for one message.
 func (a *App) formatMessage(m protocol.RecvMsg) string {
+	// System message (e.g. "user X invited by Y") — no sender, displayed as a divider
+	if m.FromUser == "" {
+		return fmt.Sprintf("[grey]── %s ──[-]\n", m.Content)
+	}
+
 	ts := ""
 	if len(m.SentAt) >= 16 {
 		ts = m.SentAt[11:16]
