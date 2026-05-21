@@ -7,8 +7,9 @@ services:
       POSTGRES_DB: messenger
       POSTGRES_USER: messenger
       POSTGRES_PASSWORD: secret
-    ports:
-      - "5432:5432"
+    # не пробрасываем наружу — доступен только внутри Docker-сети
+    expose:
+      - "5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./migrations:/docker-entrypoint-initdb.d

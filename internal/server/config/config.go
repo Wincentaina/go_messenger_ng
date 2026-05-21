@@ -42,5 +42,9 @@ func Load(path string) (Config, error) {
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return Config{}, fmt.Errorf("parse config %s: %w", path, err)
 	}
+	// Allow overriding DSN via environment variable (useful in Docker)
+	if dsn := os.Getenv("MESSENGER_DB_DSN"); dsn != "" {
+		cfg.Database.DSN = dsn
+	}
 	return cfg, nil
 }
